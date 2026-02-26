@@ -1,79 +1,82 @@
 // Supabase Edge Function: Generate AI Image
 // This function handles AI image generation via BizyAir API
-// It protects the API key by running server-side
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// CORS headers for browser requests
+// CORS headers - allow all origins for now (you can restrict later)
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Max-Age': '86400',
 }
 
-// Handle CORS preflight requests
-const handleCors = (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-  return null
+// Helper to create JSON response with CORS
+const jsonResponse = (data: any, status: number = 200) => {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/json'
+    }
+  })
 }
 
-// Main handler
 Deno.serve(async (req) => {
-  // Handle CORS
-  const corsResponse = handleCors(req)
-  if (corsResponse) return corsResponse
+  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { 
+      status: 204, 
+      headers: corsHeaders 
+    })
+  }
 
-  // Only accept POST requests
+  // Only accept POST
   if (req.method !== 'POST') {
-    return new Response(
-      JSON.stringify({ error: 'Method not allowed' }),
-      { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
   try {
-    // Get request body
-    const { modelId, prompt, params, userId } = await req.json()
+    // Parse request body
+    let body
+    try {
+      body = await req.json()
+    } catch (e) {
+      return jsonResponse({ error: 'Invalid JSON body' }, 400)
+    }
 
-    // Validate required fields
+    const { modelId, prompt, params, userId } = body
+
+    // Validate
     if (!modelId || !prompt || !params || !userId) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields: modelId, prompt, params, userId' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return jsonResponse({ 
+        error: 'Missing required fields',
+        details: { modelId: !!modelId, prompt: !!prompt, params: !!params, userId: !!userId }
+      }, 400)
     }
 
-    // Initialize Supabase client with service role
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_KEY') || ''
-    
+    // Get environment variables
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_KEY')
+    const bizyAirApiKey = Deno.env.get('BIZYAIR_API_KEY')
+
     if (!supabaseUrl || !supabaseServiceKey) {
-      return new Response(
-        JSON.stringify({ error: 'Server configuration error' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.error('Missing Supabase config')
+      return jsonResponse({ error: 'Server configuration error: Supabase not configured' }, 500)
     }
 
+    if (!bizyAirApiKey) {
+      console.error('Missing BIZYAIR_API_KEY')
+      return jsonResponse({ error: 'Server configuration error: BizyAir API not configured' }, 500)
+    }
+
+    // Initialize Supabase
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
+      auth: { autoRefreshToken: false, persistSession: false }
     })
 
-    // Get BizyAir API Key from environment
-    const bizyAirApiKey = Deno.env.get('BIZYAIR_API_KEY') || ''
-    
-    if (!bizyAirApiKey) {
-      return new Response(
-        JSON.stringify({ error: 'BizyAir API not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    // Create task record in database
+    // Create task
+    console.log(`[Generate] Creating task for user ${userId}`)
     const { data: task, error: taskError } = await supabase
       .from('generation_tasks')
       .insert({
@@ -86,25 +89,26 @@ Deno.serve(async (req) => {
       .select()
       .single()
 
-    if (taskError || !task) {
-      console.error('Failed to create task:', taskError)
-      return new Response(
-        JSON.stringify({ error: 'Failed to create task' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+    if (taskError) {
+      console.error('Create task error:', taskError)
+      return jsonResponse({ error: 'Failed to create task', details: taskError.message }, 500)
     }
 
-    // Call BizyAir API
-    const bizyAirUrl = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create'
-    
+    if (!task) {
+      return jsonResponse({ error: 'Task creation returned no data' }, 500)
+    }
+
+    console.log(`[Generate] Task created: ${task.id}`)
+
+    // Call BizyAir
     const payload = {
       web_app_id: params.web_app_id,
       input_values: params.input_values
     }
 
-    console.log(`[Generate] Calling BizyAir API for task ${task.id}`)
-
-    const response = await fetch(bizyAirUrl, {
+    console.log(`[Generate] Calling BizyAir API...`)
+    
+    const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -115,132 +119,96 @@ Deno.serve(async (req) => {
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error(`BizyAir API Error (${response.status}):`, errorText)
+      console.error(`BizyAir Error ${response.status}:`, errorText)
       
-      // Update task status to FAILED
       await supabase
         .from('generation_tasks')
-        .update({
-          status: 'FAILED',
-          error: `BizyAir API Error: ${errorText.substring(0, 200)}`
-        })
+        .update({ status: 'FAILED', error: `BizyAir API Error: ${errorText.substring(0, 200)}` })
         .eq('id', task.id)
       
-      return new Response(
-        JSON.stringify({ error: 'AI generation failed', taskId: task.id }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return jsonResponse({ error: 'AI generation failed', taskId: task.id }, 502)
     }
 
     const result = await response.json()
-    console.log(`[Generate] BizyAir response:`, JSON.stringify(result).substring(0, 200))
+    console.log(`[Generate] BizyAir response:`, JSON.stringify(result).substring(0, 300))
 
-    // Check for explicit failure status
+    // Check for failure
     if (result.status === 'Failed' || result.data?.status === 'failed') {
-      let errorMsg = 'Unknown upstream error'
-      if (result.outputs && result.outputs.length > 0) {
+      let errorMsg = 'Unknown error'
+      if (result.outputs?.[0]) {
         errorMsg = result.outputs[0].error_msg || result.outputs[0].error_type || errorMsg
       }
       
-      // Update task status to FAILED
       await supabase
         .from('generation_tasks')
-        .update({
-          status: 'FAILED',
-          error: errorMsg.substring(0, 300)
-        })
+        .update({ status: 'FAILED', error: errorMsg.substring(0, 300) })
         .eq('id', task.id)
       
-      return new Response(
-        JSON.stringify({ error: errorMsg, taskId: task.id }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return jsonResponse({ error: errorMsg, taskId: task.id }, 502)
     }
 
-    // Extract image URL from response
+    // Extract image URL
     let imageUrl: string | null = null
     
-    if (result.outputs && result.outputs.length > 0) {
+    if (result.outputs?.[0]) {
       const output = result.outputs[0]
-      if (output.data?.images?.[0]) {
-        imageUrl = typeof output.data.images[0] === 'string'
-          ? output.data.images[0]
-          : output.data.images[0].url
-      } else if (output.file_url) {
-        imageUrl = output.file_url
-      } else if (output.object_url) {
-        imageUrl = output.object_url
-      }
+      imageUrl = output.data?.images?.[0] || output.file_url || output.object_url || null
+      if (typeof imageUrl === 'object') imageUrl = imageUrl?.url
     }
     
-    if (!imageUrl && result.data?.file_url) {
-      imageUrl = result.data.file_url
-    }
+    imageUrl = imageUrl || result.data?.file_url || null
 
     if (!imageUrl) {
-      console.error('No image URL in response:', JSON.stringify(result))
-      
+      console.error('No image URL in response')
       await supabase
         .from('generation_tasks')
-        .update({
-          status: 'FAILED',
-          error: 'No image URL found in response'
-        })
+        .update({ status: 'FAILED', error: 'No image URL in response' })
         .eq('id', task.id)
       
-      return new Response(
-        JSON.stringify({ error: 'No image generated', taskId: task.id }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return jsonResponse({ error: 'No image generated', taskId: task.id }, 502)
     }
 
-    // Update task as completed
-    const { error: updateError } = await supabase
-      .from('generation_tasks')
-      .update({
-        status: 'COMPLETED',
-        result_url: imageUrl,
-        result_json: result,
-        completed_at: new Date().toISOString(),
-        progress: 100
-      })
-      .eq('id', task.id)
+    // Update task and save image
+    await Promise.all([
+      supabase
+        .from('generation_tasks')
+        .update({
+          status: 'COMPLETED',
+          result_url: imageUrl,
+          result_json: result,
+          completed_at: new Date().toISOString(),
+          progress: 100
+        })
+        .eq('id', task.id),
+      
+      supabase
+        .from('images')
+        .insert({
+          user_id: userId,
+          url: imageUrl,
+          prompt,
+          width: params.input_values?.width || 1024,
+          height: params.input_values?.height || 1024,
+          model_name: modelId,
+          is_public: false,
+          params
+        })
+    ])
 
-    if (updateError) {
-      console.error('Failed to update task:', updateError)
-    }
+    console.log(`[Generate] Success: ${task.id}`)
 
-    // Save to images table
-    await supabase
-      .from('images')
-      .insert({
-        user_id: userId,
-        url: imageUrl,
-        prompt,
-        width: params.input_values?.width || 1024,
-        height: params.input_values?.height || 1024,
-        model_name: modelId,
-        is_public: false,
-        params
-      })
-
-    console.log(`[Generate] Task ${task.id} completed successfully`)
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        taskId: task.id,
-        imageUrl,
-        message: 'Image generated successfully'
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    return jsonResponse({
+      success: true,
+      taskId: task.id,
+      imageUrl,
+      message: 'Image generated successfully'
+    })
 
   } catch (error: any) {
-    console.error('Generate function error:', error)
-    return new Response(
-      JSON.stringify({ error: error.message || 'Internal server error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    console.error('Generate error:', error)
+    return jsonResponse({ 
+      error: 'Internal server error',
+      message: error.message 
+    }, 500)
   }
 })

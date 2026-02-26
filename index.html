@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DopaGen AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              carbon: {
+                base: '#000000',     // Pure Black
+                surface: '#0A0A0A',  // Secondary Background
+                card: '#111111',     // Card Background
+                border: '#262626',   // Zinc-800 equivalent
+                lightBorder: '#404040',
+                text: '#EDEDED',     // High contrast text
+                muted: '#888888',    // Subdued text
+                accent: '#FFFFFF',   // Stark White Accent
+              }
+            },
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              display: ['Inter', 'sans-serif'] // Fey uses a unified font stack usually
+            },
+            borderRadius: {
+              'xs': '4px',
+              'sm': '6px',
+              'md': '8px',
+              'lg': '12px',
+              'xl': '16px',
+            },
+            animation: {
+              'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'scan': 'scan 3s linear infinite',
+              'fade-in': 'fadeIn 0.3s ease-out',
+              'shine': 'shine 3s linear infinite',
+            },
+            keyframes: {
+              scan: {
+                '0%': { transform: 'translateY(-100%)' },
+                '100%': { transform: 'translateY(100%)' },
+              },
+              fadeIn: {
+                '0%': { opacity: '0', transform: 'translateY(5px)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
+              },
+              shine: {
+                '0%': { backgroundPosition: '200% center' },
+                '100%': { backgroundPosition: '-200% center' },
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+      
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #000000;
+        color: #EDEDED;
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+      
+      /* Refined Scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0A0A0A;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #262626;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #404040;
+      }
+      
+      /* Carbon Card System */
+      .carbon-card {
+        background: #111111;
+        border: 1px solid #262626;
+        border-radius: 12px;
+        transition: border-color 0.2s ease;
+      }
+      
+      .carbon-card:hover {
+        border-color: #404040;
+      }
+
+      .carbon-input {
+        background: #0A0A0A;
+        border: 1px solid #262626;
+        color: #EDEDED;
+        transition: all 0.2s ease;
+        outline: none;
+      }
+      
+      .carbon-input:focus {
+        border-color: #525252;
+        box-shadow: 0 0 0 1px #525252;
+      }
+
+      /* Performance optimization: content-visibility for masonry grids */
+      .masonry-grid {
+        content-visibility: auto;
+        contain-intrinsic-size: auto 300px;
+      }
+      
+      .content-visibility-item {
+        content-visibility: auto;
+        contain-intrinsic-size: 0 200px;
+      }
+
+      /* Utility for text gradients if needed, though Fey is usually flat */
+      .text-gradient {
+        background: linear-gradient(to right, #ffffff, #888888);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0",
+    "framer-motion": "https://esm.sh/framer-motion@^12.34.0",
+    "tailwind-merge": "https://esm.sh/tailwind-merge@^3.4.0",
+    "clsx": "https://esm.sh/clsx@^2.1.1",
+    "@tsparticles/slim": "https://esm.sh/@tsparticles/slim@^3.9.1",
+    "@tsparticles/react": "https://esm.sh/@tsparticles/react@^3.0.0",
+    "@tsparticles/engine": "https://esm.sh/@tsparticles/engine@^3.9.1",
+    "three": "https://esm.sh/three@0.160.0",
+    "express": "https://esm.sh/express@^5.2.1",
+    "dotenv": "https://esm.sh/dotenv@^17.2.4",
+    "cors": "https://esm.sh/cors@^2.8.6",
+    "morgan": "https://esm.sh/morgan@^1.10.1",
+    "@prisma/client": "https://esm.sh/@prisma/client@^7.4.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <!-- Subtle Gradient Glow in corners, much darker now -->
+    <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; overflow: hidden;">
+      <div style="position: absolute; top: -10%; left: 10%; width: 40%; height: 40%; background: radial-gradient(circle, rgba(255, 255, 255, 0.03) 0%, transparent 60%); filter: blur(100px);"></div>
+    </div>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

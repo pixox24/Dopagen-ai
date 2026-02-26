@@ -56,20 +56,22 @@ jobs:
       run: npx tsc --noEmit
       continue-on-error: true
 
-  # 3. 部署到 Vercel (仅在 main 分支)
-  deploy-frontend:
-    needs: [lint-and-typecheck]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Deploy to Vercel
-      uses: amondnet/vercel-action@v25
-      with:
-        vercel-token: ${{ secrets.VERCEL_TOKEN }}
-        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-        working-directory: ./
+  # 3. 部署到 Vercel (仅在 main 分支，需要配置 secrets 后才启用)
+  # 注意：需要先在 GitHub Secrets 中配置 VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
+  # 详见 docs/vercel-railway-deploy.md
+  # deploy-frontend:
+  #   needs: [lint-and-typecheck]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #   
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v4
+  #   
+  #   - name: Deploy to Vercel
+  #     uses: amondnet/vercel-action@v25
+  #     with:
+  #       vercel-token: ${{ secrets.VERCEL_TOKEN }}
+  #       vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+  #       vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+  #       working-directory: ./

@@ -28,9 +28,6 @@ major_version = 15
 enabled = false
 # Port to use for the local connection pooler.
 port = 54329
-# Specifies when a server connection can be reused by other clients.
-# Configure one of the supported pooler modes: `transaction`, `session`.
-default_pool_mode = "transaction"
 
 [realtime]
 enabled = true
@@ -50,8 +47,6 @@ openai_api_key = "env(OPENAI_API_KEY)"
 
 # Email testing server. Emails sent with the local dev setup are not actually sent - rather, they
 # are monitored, and you can view the emails that would have been sent from the web interface.
-inbucket_url = "http://127.0.0.1:54324"
-
 [storage]
 enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").

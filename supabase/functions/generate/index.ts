@@ -205,10 +205,14 @@ Deno.serve(async (req) => {
     })
 
   } catch (error: any) {
-    console.error('Generate error:', error)
+    console.error('=== FATAL ERROR ===')
+    console.error('Error message:', error.message)
+    console.error('Error stack:', error.stack)
+    console.error('===================')
     return jsonResponse({ 
       error: 'Internal server error',
-      message: error.message 
+      message: error.message,
+      stack: error.stack 
     }, 500)
   }
 })

@@ -309,7 +309,7 @@ const Generate: React.FC = () => {
                 globalAspectRatio: aspectRatio,
                 globalQuality: quality,
                 globalApiKey: globalApiKey
-            }, user.id);
+            });
 
             // 3. 用真实的 task ID 更新任务
             setTasks(prev => prev.map(t =>

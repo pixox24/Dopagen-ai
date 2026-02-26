@@ -1,9 +1,9 @@
 // Supabase Edge Function: Generate AI Image
-// This function handles AI image generation via BizyAir API
+// Handles AI generation with proper JWT authentication
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// CORS headers - allow all origins for now (you can restrict later)
+// CORS headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -11,32 +11,46 @@ const corsHeaders = {
   'Access-Control-Max-Age': '86400',
 }
 
-// Helper to create JSON response with CORS
 const jsonResponse = (data: any, status: number = 200) => {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      ...corsHeaders,
-      'Content-Type': 'application/json'
-    }
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   })
 }
 
 Deno.serve(async (req) => {
   // Handle OPTIONS preflight
   if (req.method === 'OPTIONS') {
-    return new Response(null, { 
-      status: 204, 
-      headers: corsHeaders 
-    })
+    return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  // Only accept POST
   if (req.method !== 'POST') {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
   try {
+    // Debug: log all headers
+    console.log('=== REQUEST HEADERS ===')
+    for (const [key, value] of req.headers.entries()) {
+      console.log(`${key}: ${value.substring(0, 50)}...`)
+    }
+    console.log('=======================')
+    
+    // Get JWT token from Authorization header
+    const authHeader = req.headers.get('authorization')
+    console.log('Auth header:', authHeader ? 'Present' : 'Missing')
+    
+    if (!authHeader) {
+      return jsonResponse({ error: 'Missing authorization header', debug: 'No authorization header found' }, 401)
+    }
+
+    const token = authHeader.replace('Bearer ', '')
+    console.log('Token length:', token.length)
+    
+    if (!token) {
+      return jsonResponse({ error: 'Invalid authorization header', debug: 'Token empty after Bearer removal' }, 401)
+    }
+
     // Parse request body
     let body
     try {
@@ -45,38 +59,49 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Invalid JSON body' }, 400)
     }
 
-    const { modelId, prompt, params, userId } = body
+    const { modelId, prompt, params } = body
 
-    // Validate
-    if (!modelId || !prompt || !params || !userId) {
+    // Validate fields
+    if (!modelId || !prompt || !params) {
       return jsonResponse({ 
         error: 'Missing required fields',
-        details: { modelId: !!modelId, prompt: !!prompt, params: !!params, userId: !!userId }
+        details: { modelId: !!modelId, prompt: !!prompt, params: !!params }
       }, 400)
     }
 
-    // Get environment variables
+    // Initialize Supabase with service role
     const supabaseUrl = Deno.env.get('SUPABASE_URL')
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_KEY')
     const bizyAirApiKey = Deno.env.get('BIZYAIR_API_KEY')
 
     if (!supabaseUrl || !supabaseServiceKey) {
       console.error('Missing Supabase config')
-      return jsonResponse({ error: 'Server configuration error: Supabase not configured' }, 500)
+      return jsonResponse({ error: 'Server configuration error' }, 500)
     }
 
     if (!bizyAirApiKey) {
       console.error('Missing BIZYAIR_API_KEY')
-      return jsonResponse({ error: 'Server configuration error: BizyAir API not configured' }, 500)
+      return jsonResponse({ error: 'BizyAir API not configured' }, 500)
     }
 
-    // Initialize Supabase
+    // Create Supabase client with user's JWT
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { autoRefreshToken: false, persistSession: false }
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { Authorization: `Bearer ${token}` } }
     })
 
+    // Verify user by getting their session
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    
+    if (authError || !user) {
+      console.error('Auth error:', authError)
+      return jsonResponse({ error: 'Invalid or expired token' }, 401)
+    }
+
+    const userId = user.id
+    console.log(`[Generate] User ${userId} requesting generation`)
+
     // Create task
-    console.log(`[Generate] Creating task for user ${userId}`)
     const { data: task, error: taskError } = await supabase
       .from('generation_tasks')
       .insert({
@@ -89,13 +114,9 @@ Deno.serve(async (req) => {
       .select()
       .single()
 
-    if (taskError) {
+    if (taskError || !task) {
       console.error('Create task error:', taskError)
-      return jsonResponse({ error: 'Failed to create task', details: taskError.message }, 500)
-    }
-
-    if (!task) {
-      return jsonResponse({ error: 'Task creation returned no data' }, 500)
+      return jsonResponse({ error: 'Failed to create task' }, 500)
     }
 
     console.log(`[Generate] Task created: ${task.id}`)
@@ -106,7 +127,7 @@ Deno.serve(async (req) => {
       input_values: params.input_values
     }
 
-    console.log(`[Generate] Calling BizyAir API...`)
+    console.log(`[Generate] Calling BizyAir...`)
     
     const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
       method: 'POST',
@@ -206,13 +227,11 @@ Deno.serve(async (req) => {
 
   } catch (error: any) {
     console.error('=== FATAL ERROR ===')
-    console.error('Error message:', error.message)
-    console.error('Error stack:', error.stack)
-    console.error('===================')
+    console.error('Error:', error.message)
+    console.error('Stack:', error.stack)
     return jsonResponse({ 
       error: 'Internal server error',
-      message: error.message,
-      stack: error.stack 
+      message: error.message 
     }, 500)
   }
 })

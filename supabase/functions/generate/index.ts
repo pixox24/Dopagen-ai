@@ -1,14 +1,12 @@
 // Supabase Edge Function: Generate AI Image
-// Handles AI generation with proper JWT authentication
+// Handles AI generation - Supabase auto-authenticates via request.sb
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// CORS headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Max-Age': '86400',
 }
 
 const jsonResponse = (data: any, status: number = 200) => {
@@ -19,7 +17,6 @@ const jsonResponse = (data: any, status: number = 200) => {
 }
 
 Deno.serve(async (req) => {
-  // Handle OPTIONS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
@@ -29,27 +26,38 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Debug: log all headers
-    console.log('=== REQUEST HEADERS ===')
-    for (const [key, value] of req.headers.entries()) {
-      console.log(`${key}: ${value.substring(0, 50)}...`)
+    // Get user from Supabase Auth - Edge Runtime validates JWT automatically
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+    
+    // Use the anon key from environment (set by Supabase automatically)
+    // For Edge Functions, we can use the service key for admin operations
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_KEY') || ''
+    
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return jsonResponse({ error: 'Server configuration error: Missing Supabase credentials' }, 500)
     }
-    console.log('=======================')
     
-    // Get JWT token from Authorization header
-    const authHeader = req.headers.get('authorization')
-    console.log('Auth header:', authHeader ? 'Present' : 'Missing')
-    
+    // Get auth header from request
+    const authHeader = req.headers.get('authorization') || ''
     if (!authHeader) {
-      return jsonResponse({ error: 'Missing authorization header', debug: 'No authorization header found' }, 401)
+      return jsonResponse({ error: 'Missing authorization header' }, 401)
     }
-
-    const token = authHeader.replace('Bearer ', '')
-    console.log('Token length:', token.length)
     
-    if (!token) {
-      return jsonResponse({ error: 'Invalid authorization header', debug: 'Token empty after Bearer removal' }, 401)
+    // Create client with user's token to validate
+    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { autoRefreshToken: false, persistSession: false }
+    })
+    
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser()
+    
+    if (userError || !user) {
+      console.error('Auth error:', userError)
+      return jsonResponse({ error: 'Unauthorized - please login' }, 401)
     }
+    
+    const userId = user.id
+    console.log(`[Generate] User ${userId} authenticated`)
 
     // Parse request body
     let body
@@ -61,7 +69,6 @@ Deno.serve(async (req) => {
 
     const { modelId, prompt, params } = body
 
-    // Validate fields
     if (!modelId || !prompt || !params) {
       return jsonResponse({ 
         error: 'Missing required fields',
@@ -69,40 +76,21 @@ Deno.serve(async (req) => {
       }, 400)
     }
 
-    // Initialize Supabase with service role
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_KEY')
+    // Get other environment variables
     const bizyAirApiKey = Deno.env.get('BIZYAIR_API_KEY')
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('Missing Supabase config')
-      return jsonResponse({ error: 'Server configuration error' }, 500)
-    }
-
     if (!bizyAirApiKey) {
-      console.error('Missing BIZYAIR_API_KEY')
       return jsonResponse({ error: 'BizyAir API not configured' }, 500)
     }
 
-    // Create Supabase client with user's JWT
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-      global: { headers: { Authorization: `Bearer ${token}` } }
+    // Create admin client for database operations
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
     })
 
-    // Verify user by getting their session
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
-    
-    if (authError || !user) {
-      console.error('Auth error:', authError)
-      return jsonResponse({ error: 'Invalid or expired token' }, 401)
-    }
-
-    const userId = user.id
-    console.log(`[Generate] User ${userId} requesting generation`)
-
     // Create task
-    const { data: task, error: taskError } = await supabase
+    console.log(`[Generate] Creating task for user ${userId}`)
+    const { data: task, error: taskError } = await adminClient
       .from('generation_tasks')
       .insert({
         user_id: userId,
@@ -142,7 +130,7 @@ Deno.serve(async (req) => {
       const errorText = await response.text()
       console.error(`BizyAir Error ${response.status}:`, errorText)
       
-      await supabase
+      await adminClient
         .from('generation_tasks')
         .update({ status: 'FAILED', error: `BizyAir API Error: ${errorText.substring(0, 200)}` })
         .eq('id', task.id)
@@ -160,7 +148,7 @@ Deno.serve(async (req) => {
         errorMsg = result.outputs[0].error_msg || result.outputs[0].error_type || errorMsg
       }
       
-      await supabase
+      await adminClient
         .from('generation_tasks')
         .update({ status: 'FAILED', error: errorMsg.substring(0, 300) })
         .eq('id', task.id)
@@ -181,7 +169,7 @@ Deno.serve(async (req) => {
 
     if (!imageUrl) {
       console.error('No image URL in response')
-      await supabase
+      await adminClient
         .from('generation_tasks')
         .update({ status: 'FAILED', error: 'No image URL in response' })
         .eq('id', task.id)
@@ -191,7 +179,7 @@ Deno.serve(async (req) => {
 
     // Update task and save image
     await Promise.all([
-      supabase
+      adminClient
         .from('generation_tasks')
         .update({
           status: 'COMPLETED',
@@ -202,7 +190,7 @@ Deno.serve(async (req) => {
         })
         .eq('id', task.id),
       
-      supabase
+      adminClient
         .from('images')
         .insert({
           user_id: userId,

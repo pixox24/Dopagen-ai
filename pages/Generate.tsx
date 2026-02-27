@@ -175,6 +175,9 @@ const Generate: React.FC = () => {
     const [selectedFeedImage, setSelectedFeedImage] = useState<GeneratedImage | null>(null);
     const [activeBatchIndex, setActiveBatchIndex] = useState<number | null>(null);
 
+    // Track polling attempts for timeout detection
+    const pollingAttempts = useRef<Record<string, number>>({});
+
     // --- POLLING LOGIC ---
     useEffect(() => {
         // Find tasks that are actively running
@@ -186,6 +189,9 @@ const Generate: React.FC = () => {
                 // Skip tasks that haven't received a real backend ID yet
                 if (task.id.startsWith('pending_')) continue;
 
+                // Increment polling attempt counter
+                pollingAttempts.current[task.id] = (pollingAttempts.current[task.id] || 0) + 1;
+
                 try {
                     const statusData = await pollTaskStatus(task.id);
 
@@ -193,6 +199,10 @@ const Generate: React.FC = () => {
                         // Success!
                         const completedAt = Date.now();
                         const duration = task.startedAt ? Math.floor((completedAt - task.startedAt) / 1000) : 0;
+                        
+                        // Clear polling attempts
+                        delete pollingAttempts.current[task.id];
+                        
                         setTasks(prev => prev.map(t =>
                             t.id === task.id ? { 
                                 ...t, 
@@ -220,9 +230,21 @@ const Generate: React.FC = () => {
                             duration: duration
                         });
                     } else if (statusData.status === 'FAILED') {
+                        // Clear polling attempts
+                        delete pollingAttempts.current[task.id];
                         setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed', error: statusData.error } : t));
+                    } else if (statusData.status === 'PROCESSING' || statusData.status === 'PENDING') {
+                        // Check for timeout (30 attempts = 90 seconds)
+                        if (pollingAttempts.current[task.id] > 30) {
+                            console.warn(`Task ${task.id} timeout after 90 seconds`);
+                            setTasks(prev => prev.map(t => 
+                                t.id === task.id 
+                                    ? { ...t, status: 'failed', error: 'Generation timeout - please try again' } 
+                                    : t
+                            ));
+                            delete pollingAttempts.current[task.id];
+                        }
                     }
-                    // If PENDING/PROCESSING, do nothing, just wait for next poll
                 } catch (e) {
                     console.error("Polling error", e);
                 }

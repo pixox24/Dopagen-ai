@@ -1,5 +1,5 @@
-// Supabase Edge Function: Generate AI Image
-// Handles AI generation - Supabase auto-authenticates via request.sb
+// Supabase Edge Function: Generate AI Image (Async Mode)
+// Handles AI generation with timeout protection and async polling
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -11,6 +11,7 @@ const ALLOWED_ORIGINS = Deno.env.get('ALLOWED_ORIGINS')?.split(',') || ['http://
 const MAX_REQUEST_SIZE = 10 * 1024 * 1024 // 10MB
 const MAX_PROMPT_LENGTH = 4000
 const MAX_MODEL_ID_LENGTH = 100
+const FETCH_TIMEOUT = 120000 // 120 seconds timeout for BizyAir API
 
 // TypeScript interfaces
 interface GenerateRequest {
@@ -124,6 +125,24 @@ const validateRequest = (body: unknown): { valid: boolean; data?: GenerateReques
   }
 }
 
+// Fetch with timeout
+async function fetchWithTimeout(url: string, options: RequestInit, timeout: number): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    })
+    clearTimeout(timeoutId)
+    return response
+  } catch (error) {
+    clearTimeout(timeoutId)
+    throw error
+  }
+}
+
 Deno.serve(async (req) => {
   const corsHeaders = getCorsHeaders(req)
   
@@ -218,22 +237,52 @@ Deno.serve(async (req) => {
 
     console.log(`[Generate] Task created: ${task.id}`)
 
-    // Call BizyAir
+    // Call BizyAir with timeout
     const payload = {
       web_app_id: params.web_app_id,
       input_values: params.input_values
     }
 
-    console.log(`[Generate] Calling BizyAir...`)
+    console.log(`[Generate] Calling BizyAir with ${FETCH_TIMEOUT}ms timeout...`)
     
-    const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${BIZYAIR_API_KEY}`
-      },
-      body: JSON.stringify(payload)
-    })
+    let response: Response
+    let timedOut = false
+    
+    try {
+      response = await fetchWithTimeout('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${BIZYAIR_API_KEY}`
+        },
+        body: JSON.stringify(payload)
+      }, FETCH_TIMEOUT)
+    } catch (fetchError) {
+      if (fetchError.name === 'AbortError') {
+        console.log(`[Generate] BizyAir call timed out after ${FETCH_TIMEOUT}ms`)
+        timedOut = true
+      } else {
+        throw fetchError
+      }
+    }
+
+    // If timed out, return 202 Accepted for async processing
+    if (timedOut) {
+      console.log(`[Generate] Returning 202 for async processing, task: ${task.id}`)
+      
+      // Update task status to PROCESSING
+      await adminClient
+        .from('generation_tasks')
+        .update({ status: 'PROCESSING' })
+        .eq('id', task.id)
+      
+      return jsonResponse({
+        success: true,
+        taskId: task.id,
+        status: 'PROCESSING',
+        message: 'Image generation started, please check status via polling'
+      }, 202, corsHeaders)
+    }
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -352,6 +401,7 @@ Deno.serve(async (req) => {
       success: true,
       taskId: task.id,
       imageUrl,
+      status: 'COMPLETED',
       message: 'Image generated successfully'
     }, 200, corsHeaders)
 

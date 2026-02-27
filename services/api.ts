@@ -15,11 +15,17 @@ export interface TaskResponse {
     progress?: number;
 }
 
+export interface SubmitTaskResponse {
+    taskId: string;
+    imageUrl?: string;
+    status?: string;
+}
+
 /**
  * Submit image generation task to Supabase Edge Function
  * This replaces the old Express backend API call
  */
-export const submitGenerationTask = async (options: GenerateOptions): Promise<string> => {
+export const submitGenerationTask = async (options: GenerateOptions): Promise<SubmitTaskResponse> => {
     const { model, formState, globalWidth, globalHeight, globalAspectRatio, globalQuality } = options;
     const { schema } = model;
 
@@ -87,7 +93,11 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<st
             throw new Error(data?.error || "Generation failed");
         }
 
-        return data.taskId;
+        return {
+            taskId: data.taskId,
+            imageUrl: data.imageUrl,
+            status: data.status || 'PENDING'
+        };
     } catch (e: any) {
         console.error("Submission Error:", e);
         throw new Error(e.message || "Cannot connect to generation service.");
@@ -128,8 +138,15 @@ export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
  * Generate image with polling
  */
 export const generateImage = async (options: GenerateOptions): Promise<string[]> => {
-    const taskId = await submitGenerationTask(options);
+    const submitResponse = await submitGenerationTask(options);
+    const { taskId, imageUrl } = submitResponse;
     
+    // 如果已经返回了 imageUrl，直接返回
+    if (imageUrl) {
+        return [imageUrl];
+    }
+    
+    // 否则轮询等待结果
     while (true) {
         await new Promise(r => setTimeout(r, 2000));
         const task = await pollTaskStatus(taskId);

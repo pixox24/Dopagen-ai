@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 // Import new async methods
-import { submitGenerationTask, pollTaskStatus, TaskResponse } from '../services/api';
+import { submitGenerationTask, pollTaskStatus, TaskResponse, SubmitTaskResponse } from '../services/api';
 import { ASPECT_RATIOS, QUALITY_LEVELS, RESOLUTION_MAP } from '../constants';
 import Button from '../components/Button';
 import { DottedSurface } from '../components/ui/dotted-surface';
@@ -301,7 +301,7 @@ const Generate: React.FC = () => {
 
         try {
             // 2. Submit Task to Backend
-            const backendTaskId = await submitGenerationTask({
+            const submitResponse = await submitGenerationTask({
                 model: currentModel,
                 formState: finalFormState,
                 globalWidth: dimensions.w,
@@ -311,13 +311,37 @@ const Generate: React.FC = () => {
                 globalApiKey: globalApiKey
             });
 
+            const { taskId: backendTaskId, imageUrl, status } = submitResponse;
+
             // 3. 用真实的 task ID 更新任务
             setTasks(prev => prev.map(t =>
                 t.id === pendingTaskId
-                    ? { ...t, id: backendTaskId }
+                    ? { 
+                        ...t, 
+                        id: backendTaskId,
+                        status: status === 'COMPLETED' ? 'completed' : t.status,
+                        imageUrl: imageUrl || t.imageUrl,
+                        images: imageUrl ? [imageUrl] : t.images
+                    }
                     : t
             ));
             setActiveTaskId(backendTaskId);
+
+            // 4. 如果已经生成完成，立即添加到画廊
+            if (status === 'COMPLETED' && imageUrl) {
+                addUserImage({
+                    id: 'img_' + Date.now(),
+                    url: imageUrl,
+                    images: [imageUrl],
+                    prompt: promptVal,
+                    width: dimensions.w,
+                    height: dimensions.h,
+                    createdAt: Date.now(),
+                    isPublic: false,
+                    userId: user?.id || 'anon',
+                    model: currentModel.name
+                });
+            }
 
         } catch (err: any) {
             console.error(err);

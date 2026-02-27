@@ -17,9 +17,11 @@ export interface GeneratedImage {
   isPublic: boolean;
   userId: string;
   model: string;
+  modelId?: string;   // Model ID for Recreate
 
   // New fields for Recreate & Display
   params?: any;        // The JSON params used to generate
+  duration?: number;   // Generation duration in seconds
   user?: {             // Joined user profile
     username: string;
     avatar: string;
@@ -37,6 +39,9 @@ export interface GenerationTask {
   images?: string[];        // All images for batch results
   error?: string;
   createdAt: number;
+  startedAt?: number;       // When generation started (processing)
+  completedAt?: number;     // When generation completed
+  duration?: number;        // Generation duration in seconds
   width: number;
   height: number;
 }

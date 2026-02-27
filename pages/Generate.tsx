@@ -44,6 +44,35 @@ interface TaskItemProps {
 
 const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: TaskItemProps) {
     const handleDelete = () => onDelete(task.id);
+    const [elapsedTime, setElapsedTime] = useState<number>(0);
+    
+    // Timer effect for ongoing tasks
+    useEffect(() => {
+        if (task.status !== 'processing' && task.status !== 'queued') {
+            return;
+        }
+        
+        const startTime = task.startedAt || task.createdAt;
+        
+        const updateTimer = () => {
+            const now = Date.now();
+            const elapsed = Math.floor((now - startTime) / 1000);
+            setElapsedTime(elapsed);
+        };
+        
+        // Update immediately
+        updateTimer();
+        
+        // Update every second
+        const intervalId = setInterval(updateTimer, 1000);
+        
+        return () => clearInterval(intervalId);
+    }, [task.status, task.startedAt, task.createdAt]);
+    
+    // Display time: for completed use duration, for ongoing use elapsedTime
+    const displayTime = task.status === 'completed' && task.duration 
+        ? task.duration 
+        : (task.status === 'processing' || task.status === 'queued') ? elapsedTime : null;
     
     return (
         <div 
@@ -52,6 +81,14 @@ const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: 
             style={{ height: '100px' }}
         >
             <DeleteTaskButton onDelete={handleDelete} />
+            
+            {/* Timer Badge */}
+            {displayTime !== null && (
+                <div className={`absolute top-1 right-1 z-20 px-1.5 py-0.5 rounded text-[9px] font-mono ${task.status === 'completed' ? 'bg-green-500/80 text-white' : 'bg-black/60 text-white/80'}`}>
+                    {displayTime}s
+                </div>
+            )}
+            
             {task.status === 'completed' && task.imageUrl ? (
                 <img src={task.imageUrl} alt="Result" className="w-full h-full object-cover" />
             ) : task.status === 'failed' ? (
@@ -154,8 +191,17 @@ const Generate: React.FC = () => {
 
                     if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
                         // Success!
+                        const completedAt = Date.now();
+                        const duration = task.startedAt ? Math.floor((completedAt - task.startedAt) / 1000) : 0;
                         setTasks(prev => prev.map(t =>
-                            t.id === task.id ? { ...t, status: 'completed', imageUrl: statusData.resultUrl, images: [statusData.resultUrl!] } : t
+                            t.id === task.id ? { 
+                                ...t, 
+                                status: 'completed', 
+                                imageUrl: statusData.resultUrl, 
+                                images: [statusData.resultUrl!],
+                                completedAt,
+                                duration
+                            } : t
                         ));
 
                         // Add to gallery
@@ -169,7 +215,9 @@ const Generate: React.FC = () => {
                             createdAt: Date.now(),
                             isPublic: false,
                             userId: user?.id || 'anon',
-                            model: task.modelName
+                            model: task.modelName,
+                            modelId: task.modelId,
+                            duration: duration
                         });
                     } else if (statusData.status === 'FAILED') {
                         setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed', error: statusData.error } : t));
@@ -240,20 +288,44 @@ const Generate: React.FC = () => {
         // 1. Restore Prompt
         setPromptForGeneration(img.prompt);
 
-        // 2. Find and Set Model
-        const targetModel = availableModels.find(m => m.name === img.model) || availableModels.find(m => m.id === img.model);
+        // 2. Find Model - try modelId first, then model name, fallback to current
+        let targetModel = availableModels.find(m => m.id === img.modelId) ||
+                         availableModels.find(m => m.name === img.model) ||
+                         availableModels.find(m => m.id === img.model);
+
+        if (!targetModel && availableModels.length > 0) {
+            // Fallback to first available model if original not found
+            targetModel = availableModels[0];
+            console.warn(`Original model "${img.model}" not found, using fallback: ${targetModel.name}`);
+        }
 
         if (targetModel) {
+            setSelectedModelId(targetModel.id);
+
             // 3. Prepare Form State for callback in useEffect
             if (img.params?.input_values) {
                 setPendingFormState(img.params.input_values);
             }
 
-            setSelectedModelId(targetModel.id);
-
             // 4. Restore Global Settings
-            if (img.params?.aspect_ratio) setAspectRatio(img.params.aspect_ratio);
-            if (img.params?.quality) setQuality(img.params.quality);
+            if (img.params?.aspect_ratio) {
+                setAspectRatio(img.params.aspect_ratio);
+            }
+            if (img.params?.quality) {
+                setQuality(img.params.quality);
+            }
+
+            // 5. Restore resolution from width/height if params not available
+            if (!img.params?.aspect_ratio && img.width && img.height) {
+                const ratio = img.width / img.height;
+                if (ratio > 1.7) setAspectRatio('16:9');
+                else if (ratio > 1.4) setAspectRatio('3:2');
+                else if (ratio > 1.1) setAspectRatio('4:3');
+                else if (ratio > 0.9) setAspectRatio('1:1');
+                else if (ratio > 0.7) setAspectRatio('3:4');
+                else if (ratio > 0.55) setAspectRatio('2:3');
+                else setAspectRatio('9:16');
+            }
         }
 
         topRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -286,13 +358,15 @@ const Generate: React.FC = () => {
 
         // 1. 立即创建待处理任务并添加到 state，让加载动画立即显示
         const pendingTaskId = 'pending_' + Date.now();
+        const now = Date.now();
         const pendingTask: GenerationTask = {
             id: pendingTaskId,
             status: 'queued',
             prompt: promptVal,
             modelName: currentModel.name,
             modelId: currentModel.id,
-            createdAt: Date.now(),
+            createdAt: now,
+            startedAt: now, // Start timing immediately
             width: dimensions.w,
             height: dimensions.h
         };
@@ -329,6 +403,16 @@ const Generate: React.FC = () => {
 
             // 4. 如果已经生成完成，立即添加到画廊
             if (status === 'COMPLETED' && imageUrl) {
+                const completedAt = Date.now();
+                const duration = Math.floor((completedAt - pendingTask.startedAt!) / 1000);
+                
+                // Update task with completion time
+                setTasks(prev => prev.map(t =>
+                    t.id === backendTaskId
+                        ? { ...t, completedAt, duration }
+                        : t
+                ));
+                
                 addUserImage({
                     id: 'img_' + Date.now(),
                     url: imageUrl,
@@ -339,7 +423,14 @@ const Generate: React.FC = () => {
                     createdAt: Date.now(),
                     isPublic: false,
                     userId: user?.id || 'anon',
-                    model: currentModel.name
+                    model: currentModel.name,
+                    modelId: currentModel.id,
+                    params: {
+                        aspect_ratio: aspectRatio,
+                        quality: quality,
+                        input_values: finalFormState
+                    },
+                    duration: duration
                 });
             }
 
@@ -365,8 +456,10 @@ const Generate: React.FC = () => {
             <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
 
             <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                <div className="lg:col-span-4 space-y-6">
-                    <div className="carbon-card p-6 flex flex-col gap-6">
+                <div className="lg:col-span-4 h-[700px]">
+                    <div className="carbon-card p-6 flex flex-col h-full overflow-hidden">
+                        {/* Scrollable Content Area */}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-6">
 
                         {/* Model Selector */}
                         <div className="flex items-center justify-between z-20">
@@ -476,11 +569,13 @@ const Generate: React.FC = () => {
                             </Button>
                         </div>
                         {errorMsg && <div className="p-3 bg-red-900/10 border border-red-900/20 rounded-md"><p className="text-red-400 text-xs">{errorMsg}</p></div>}
+                        </div>
+                        {/* End Scrollable Content */}
                     </div>
                 </div>
 
                 {/* Canvas Area */}
-                <div className="lg:col-span-8 h-full min-h-[700px]">
+                <div className="lg:col-span-8 h-[700px]">
                     <div className="h-full carbon-card flex overflow-hidden relative bg-[#050505] shadow-2xl">
                         <div className="flex-1 flex flex-col relative bg-[#050505]">
                             <div className={`flex-grow flex items-center justify-center relative overflow-hidden p-4 ${isLoading ? 'bg-black' : "bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9IiMyMjIiLz48L3N2Zz4=')]"}`}>

@@ -117,14 +117,61 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
                                 <span className="px-2 py-1 bg-carbon-surface border border-carbon-border rounded text-xs text-carbon-text">
                                     {image.model}
                                 </span>
+                                {image.duration && (
+                                    <span className="px-2 py-1 bg-carbon-surface border border-carbon-border rounded text-xs text-carbon-text">
+                                        {image.duration}s
+                                    </span>
+                                )}
+                                <span className="px-2 py-1 bg-carbon-surface border border-carbon-border rounded text-xs text-carbon-text">
+                                    {new Date(image.createdAt).toLocaleString()}
+                                </span>
                             </div>
                         </div>
 
-                        {/* Negative Prompt (Extract from params if possible, or mock) */}
+                        {/* Generation Parameters */}
+                        {image.params && (
+                            <div>
+                                <h4 className="text-[10px] font-bold text-carbon-muted uppercase tracking-wider mb-3">Parameters</h4>
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                    {image.params.aspect_ratio && (
+                                        <div className="flex justify-between">
+                                            <span className="text-carbon-muted">Aspect Ratio:</span>
+                                            <span className="text-carbon-text">{image.params.aspect_ratio}</span>
+                                        </div>
+                                    )}
+                                    {image.params.quality && (
+                                        <div className="flex justify-between">
+                                            <span className="text-carbon-muted">Quality:</span>
+                                            <span className="text-carbon-text">{image.params.quality}</span>
+                                        </div>
+                                    )}
+                                    {image.params.input_values?.seed !== undefined && (
+                                        <div className="flex justify-between">
+                                            <span className="text-carbon-muted">Seed:</span>
+                                            <span className="text-carbon-text">{image.params.input_values.seed}</span>
+                                        </div>
+                                    )}
+                                    {image.params.input_values?.steps !== undefined && (
+                                        <div className="flex justify-between">
+                                            <span className="text-carbon-muted">Steps:</span>
+                                            <span className="text-carbon-text">{image.params.input_values.steps}</span>
+                                        </div>
+                                    )}
+                                    {image.params.input_values?.cfg_scale !== undefined && (
+                                        <div className="flex justify-between">
+                                            <span className="text-carbon-muted">CFG Scale:</span>
+                                            <span className="text-carbon-text">{image.params.input_values.cfg_scale}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Negative Prompt */}
                         <div>
                             <h4 className="text-[10px] font-bold text-carbon-muted uppercase tracking-wider mb-3">Negative Prompt</h4>
                             <p className="text-xs text-carbon-muted italic leading-relaxed">
-                                {image.params?.input_values?.negative_prompt || 'nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blur'}
+                                {image.params?.input_values?.negative_prompt || 'None'}
                             </p>
                         </div>
 

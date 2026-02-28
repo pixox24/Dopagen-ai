@@ -9,6 +9,7 @@ import { DottedSurface } from '../components/ui/dotted-surface';
 import ImageZoom from '../components/ImageZoom';
 import ImageDetailModal from '../components/ImageDetailModal';
 import { GeneratedImage, GenerationTask } from '../types';
+import { downloadImageToLocal } from '../lib/download';
 
 // Default Thumbnail for Models
 const DEFAULT_MODEL_THUMB = `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzExMSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjIwIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==`;
@@ -554,7 +555,7 @@ const Generate: React.FC = () => {
 
                         {/* Params & Settings */}
                         {otherInputs.length > 0 && (
-                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 max-h-60 overflow-y-auto custom-scrollbar pr-1 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
                                 {otherInputs.map(input => (
                                     <div key={input.key} className="space-y-1.5">
                                         <label className="flex items-center justify-between text-[10px] font-medium text-carbon-text">
@@ -635,6 +636,21 @@ const Generate: React.FC = () => {
                                     </>
                                 ) : null}
                             </div>
+
+                            {/* Image Actions */}
+                            {displayedImageUrl && activeTask?.status === 'completed' && (
+                                <div className="flex items-center justify-center gap-3 px-4 py-3 border-t border-carbon-border bg-[#0a0a0a]">
+                                    <button className="px-3 py-1.5 text-xs font-medium text-carbon-text bg-carbon-surface border border-carbon-border rounded hover:bg-white/10 transition-colors flex items-center gap-2">
+                                        <span>4K Ultra</span>
+                                    </button>
+                                    <button onClick={() => downloadImageToLocal(displayedImageUrl)} className="p-1.5 text-carbon-muted hover:text-white rounded transition-colors hover:bg-white/10" title="Download">
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                    </button>
+                                    <button className="p-1.5 text-carbon-muted hover:text-white rounded transition-colors hover:bg-white/10" title="Publish">
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1" /></svg>
+                                    </button>
+                                </div>
+                            )}
                         </div>
 
                         {/* Sidebar Queue */}

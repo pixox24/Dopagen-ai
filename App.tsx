@@ -2,7 +2,6 @@ import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Generate from './pages/Generate';
-import Explore from './pages/Explore';
 import Profile from './pages/Profile';
 import Login from './pages/Login';
 
@@ -28,7 +27,6 @@ const App: React.FC = () => {
             {/* Main App Layout */}
             <Route path="/" element={<Layout />}>
               <Route index element={<Generate />} />
-              <Route path="explore" element={<Explore />} />
               <Route path="profile" element={<Profile />} />
             </Route>
 

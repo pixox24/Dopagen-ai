@@ -42,9 +42,6 @@ const Layout: React.FC = () => {
                   <NavLink to="/" className={navLinkClass}>
                     Create
                   </NavLink>
-                  <NavLink to="/explore" className={navLinkClass}>
-                    Explore
-                  </NavLink>
                   <NavLink to="/profile" className={navLinkClass}>
                     Profile
                   </NavLink>
@@ -89,7 +86,6 @@ const Layout: React.FC = () => {
           <div className="md:hidden absolute w-full bg-carbon-base border-b border-carbon-border">
             <div className="px-4 pt-2 pb-4 space-y-1">
                 <NavLink to="/" className="block px-3 py-2 rounded-md text-sm font-medium text-carbon-text hover:bg-carbon-surface" onClick={() => setMobileMenuOpen(false)}>Create</NavLink>
-                <NavLink to="/explore" className="block px-3 py-2 rounded-md text-sm font-medium text-carbon-text hover:bg-carbon-surface" onClick={() => setMobileMenuOpen(false)}>Explore</NavLink>
                 <NavLink to="/profile" className="block px-3 py-2 rounded-md text-sm font-medium text-carbon-text hover:bg-carbon-surface" onClick={() => setMobileMenuOpen(false)}>Profile</NavLink>
                 <NavLink to="/admin" className="block px-3 py-2 rounded-md text-sm font-medium text-carbon-text hover:bg-carbon-surface" onClick={() => setMobileMenuOpen(false)}>Admin</NavLink>
                 

@@ -34,7 +34,7 @@ interface BizyAirResponse {
   }
   outputs?: Array<{
     data?: {
-      images?: string[]
+      images?: Array<string | { url?: string }>
     }
     file_url?: string
     object_url?: string | { url?: string }
@@ -274,8 +274,19 @@ Deno.serve(async (req) => {
 
     if (result.outputs?.[0]) {
       const output = result.outputs[0]
-      imageUrl = output.data?.images?.[0] || output.file_url || output.object_url || null
-      if (typeof imageUrl === 'object') imageUrl = imageUrl?.url || null
+      const firstImage = output.data?.images?.[0]
+
+      if (typeof firstImage === 'string') {
+        imageUrl = firstImage
+      } else if (firstImage && typeof firstImage === 'object') {
+        imageUrl = firstImage.url || null
+      } else if (typeof output.file_url === 'string') {
+        imageUrl = output.file_url
+      } else if (typeof output.object_url === 'string') {
+        imageUrl = output.object_url
+      } else if (output.object_url && typeof output.object_url === 'object') {
+        imageUrl = output.object_url.url || null
+      }
     }
 
     imageUrl = imageUrl || result.data?.file_url || null

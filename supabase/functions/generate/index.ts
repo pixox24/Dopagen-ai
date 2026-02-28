@@ -150,6 +150,21 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeout: numb
   }
 }
 
+// Extend Request type to include Supabase context
+declare global {
+  interface Request {
+    sb?: {
+      auth_user?: string;
+      jwt?: {
+        payload?: {
+          sub?: string;
+          role?: string;
+        };
+      };
+    };
+  }
+}
+
 Deno.serve(async (req) => {
   const corsHeaders = getCorsHeaders(req)
   
@@ -174,35 +189,18 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Server configuration error' }, 500, corsHeaders)
     }
     
-    // Get auth header from request
-    const authHeader = req.headers.get('authorization') || ''
-    console.log('[Generate] Auth header present:', !!authHeader)
-    console.log('[Generate] Auth header prefix:', authHeader.substring(0, 20))
+    // Get user from Supabase Edge Function context (auto-verified JWT)
+    // @ts-ignore - Supabase adds this property
+    const userId = req.sb?.auth_user || req.sb?.jwt?.payload?.sub
     
-    if (!authHeader) {
-      console.error('[Generate] Missing authorization header')
-      return jsonResponse({ error: 'Missing authorization header' }, 401, corsHeaders)
-    }
+    console.log('[Generate] req.sb:', JSON.stringify(req.sb))
+    console.log('[Generate] userId from context:', userId)
     
-    // Create client with user's token to validate
-    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-      global: { headers: { Authorization: authHeader } },
-      auth: { autoRefreshToken: false, persistSession: false }
-    })
-    
-    console.log('[Generate] Calling getUser()...')
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser()
-    
-    if (userError) {
-      console.error('[Generate] getUser() error:', userError)
-    }
-    
-    if (userError || !user) {
-      console.error('[Generate] Auth failed - user:', user, 'error:', userError)
+    if (!userId) {
+      console.error('[Generate] No user ID found in request context')
       return jsonResponse({ error: 'Unauthorized - please login' }, 401, corsHeaders)
     }
     
-    const userId = user.id
     console.log(`[Generate] User ${userId} authenticated successfully`)
 
     // Parse request body

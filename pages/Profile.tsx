@@ -5,6 +5,7 @@ import Button from '../components/Button';
 import ImageZoom from '../components/ImageZoom';
 import { useNavigate } from 'react-router-dom';
 import { GeneratedImage } from '../types';
+import { downloadToLocal } from '../lib/download';
 
 const Profile: React.FC = () => {
   const { user, logout } = useAuth();
@@ -47,13 +48,8 @@ const Profile: React.FC = () => {
       }
   };
 
-  const handleDownloadSingle = (img: GeneratedImage) => {
-      const link = document.createElement('a');
-      link.href = img.url;
-      link.download = `dopa-${img.id}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+  const handleDownloadSingle = async (img: GeneratedImage) => {
+      await downloadToLocal(img.url, `dopa-${img.id}.png`);
   };
 
   const handleBatchDownload = async () => {
@@ -61,7 +57,7 @@ const Profile: React.FC = () => {
       
       // Sequential download to allow browser to handle multiple files gracefully
       for (const img of imagesToDownload) {
-          handleDownloadSingle(img);
+          await handleDownloadSingle(img);
           await new Promise(r => setTimeout(r, 300)); // Small delay between downloads
       }
       setIsBatchMode(false);

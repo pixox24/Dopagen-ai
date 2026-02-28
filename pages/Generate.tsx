@@ -9,6 +9,7 @@ import { DottedSurface } from '../components/ui/dotted-surface';
 import ImageZoom from '../components/ImageZoom';
 import ImageDetailModal from '../components/ImageDetailModal';
 import { GeneratedImage, GenerationTask } from '../types';
+import { downloadToLocal } from '../lib/download';
 
 // Default Thumbnail for Models
 const DEFAULT_MODEL_THUMB = `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzExMSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjIwIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==`;
@@ -154,7 +155,7 @@ const FeedItem = memo(function FeedItem({ img, onClick, onRecreate }: FeedItemPr
 
 const Generate: React.FC = () => {
     const { user } = useAuth();
-    const { addUserImage, publicImages, availableModels, globalApiKey, generationPrompt, setPromptForGeneration } = useApp();
+    const { addUserImage, publicImages, availableModels, globalApiKey, generationPrompt, setPromptForGeneration, userImages, publishImage } = useApp();
 
     // Tasks now hold the Backend ID
     const [tasks, setTasks] = useState<GenerationTask[]>([]);
@@ -472,6 +473,27 @@ const Generate: React.FC = () => {
     const isBatchView = activeTask?.status === 'completed' && activeTask.images && activeTask.images.length > 1 && activeBatchIndex === null;
     const taskAspectRatio = activeTask && activeTask.height > 0 ? activeTask.width / activeTask.height : 1;
 
+    const layoutComplexity = otherInputs.length + (mainPromptInput ? 3 : 0) + (negativePromptInput ? 2 : 0);
+    const imageInputRows = imageInputs.length <= 1 ? 1 : Math.ceil(imageInputs.length / 2);
+    const baseUploadHeight = imageInputs.length <= 1 ? 170 : 130;
+    const uploadHeightReduction = Math.max(0, layoutComplexity - 8) * 9;
+    const uploadSlotHeight = Math.max(56, Math.min(220, Math.floor((baseUploadHeight - uploadHeightReduction) / imageInputRows)));
+
+    const handleDownloadGenerated = async () => {
+        if (!displayedImageUrl || !activeTask) return;
+        await downloadToLocal(displayedImageUrl, `dopa-gen-${activeTask.id}.png`);
+    };
+
+    const handlePublishGenerated = () => {
+        if (!displayedImageUrl) return;
+        const matchedImage = userImages.find((img) => img.url === displayedImageUrl);
+        if (!matchedImage) {
+            setErrorMsg('Image is not synced yet, please try publish again in a moment.');
+            return;
+        }
+        if (!matchedImage.isPublic) publishImage(matchedImage.id);
+    };
+
     // --- RENDER ---
     return (
         <div className="space-y-8 animate-fade-in" ref={topRef}>
@@ -481,7 +503,7 @@ const Generate: React.FC = () => {
                 <div className="lg:col-span-4 h-[700px]">
                     <div className="carbon-card p-6 flex flex-col h-full overflow-hidden">
                         {/* Scrollable Content Area */}
-                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-6">
+                        <div className="flex-1 pr-1 space-y-6 overflow-hidden">
 
                         {/* Model Selector */}
                         <div className="flex items-center justify-between z-20">
@@ -520,12 +542,12 @@ const Generate: React.FC = () => {
                                     {imageInputs.map((input) => (
                                         <div key={input.key} className="relative flex flex-col items-center gap-1">
                                             {!formState[input.key] ? (
-                                                <div onClick={() => !isLoading && triggerUpload(input.key)} className={`w-full aspect-square border border-dashed border-carbon-border rounded-lg bg-carbon-surface/50 hover:bg-carbon-surface cursor-pointer flex flex-col items-center justify-center gap-2 group min-h-[60px] ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                <div onClick={() => !isLoading && triggerUpload(input.key)} className={`w-full border border-dashed border-carbon-border rounded-lg bg-carbon-surface/50 hover:bg-carbon-surface cursor-pointer flex flex-col items-center justify-center gap-2 group min-h-[56px] ${isLoading ? 'opacity-50 pointer-events-none' : ''}`} style={{ height: `${uploadSlotHeight}px` }}>
                                                     <div className="p-1.5 rounded-full bg-carbon-card border border-carbon-border group-hover:border-white/20"><svg className="w-3 h-3 text-carbon-muted group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg></div>
                                                     <span className="text-[9px] text-carbon-muted">{input.label}</span>
                                                 </div>
                                             ) : (
-                                                <div className={`relative w-full aspect-square group rounded-lg overflow-hidden border border-carbon-border bg-black/40 ${isLoading ? 'opacity-50' : ''}`}>
+                                                <div className={`relative w-full group rounded-lg overflow-hidden border border-carbon-border bg-black/40 ${isLoading ? 'opacity-50' : ''}`} style={{ height: `${uploadSlotHeight}px` }}>
                                                     <img src={formState[input.key]} alt="Input" className="w-full h-full object-contain bg-black/50" />
                                                     <div className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer" onClick={() => !isLoading && handleInputChange(input.key, null)}>
                                                         <div className="p-1.5 bg-red-500/80 text-white rounded-full"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></div>
@@ -554,7 +576,7 @@ const Generate: React.FC = () => {
 
                         {/* Params & Settings */}
                         {otherInputs.length > 0 && (
-                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 max-h-60 overflow-y-auto custom-scrollbar pr-1 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 pr-1 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
                                 {otherInputs.map(input => (
                                     <div key={input.key} className="space-y-1.5">
                                         <label className="flex items-center justify-between text-[10px] font-medium text-carbon-text">
@@ -632,6 +654,15 @@ const Generate: React.FC = () => {
                                     <>
                                         {activeBatchIndex !== null && <button onClick={() => setActiveBatchIndex(null)} className="absolute top-4 left-4 z-20 px-3 py-1.5 bg-black/80 backdrop-blur rounded text-white text-xs border border-white/10 hover:bg-white hover:text-black transition-colors flex items-center gap-1">Grid View</button>}
                                         <img src={displayedImageUrl} alt="Output" className="max-h-full max-w-full object-contain cursor-zoom-in relative z-10 shadow-2xl" onClick={() => setZoomUrl(displayedImageUrl)} />
+                                        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-black/70 border border-white/10 rounded-lg px-2 py-1.5 backdrop-blur">
+                                            <button className="px-2 py-1 text-[11px] text-white/90 border border-white/15 rounded hover:bg-white/10 transition-colors" title="占位功能，暂未开放">图片超清</button>
+                                            <button onClick={handleDownloadGenerated} className="p-1.5 rounded border border-white/15 text-white/85 hover:bg-white/10 transition-colors" title="下载到本地">
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
+                                            </button>
+                                            <button onClick={handlePublishGenerated} className="p-1.5 rounded border border-white/15 text-white/85 hover:bg-white/10 transition-colors" title="发布">
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 12v7a1 1 0 001 1h14a1 1 0 001-1v-7M16 6l-4-4m0 0L8 6m4-4v14" /></svg>
+                                            </button>
+                                        </div>
                                     </>
                                 ) : null}
                             </div>

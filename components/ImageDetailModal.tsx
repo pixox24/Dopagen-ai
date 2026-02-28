@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { GeneratedImage } from '../types';
 import Button from './Button';
+import { downloadToLocal } from '../lib/download';
 
 interface ImageDetailModalProps {
     image: GeneratedImage | null;
@@ -33,14 +34,8 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
         navigator.clipboard.writeText(image.prompt);
     };
 
-    const handleDownload = () => {
-        const link = document.createElement('a');
-        link.href = image.url;
-        link.download = `dopa-gen-${image.id}.jpg`;
-        link.target = "_blank";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const handleDownload = async () => {
+        await downloadToLocal(image.url, `dopa-gen-${image.id}.jpg`);
     };
 
     // Use joined user data or fallback

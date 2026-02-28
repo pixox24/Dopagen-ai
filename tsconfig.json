@@ -25,5 +25,31 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "App.tsx",
+    "index.tsx",
+    "vite-env.d.ts",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "context/**/*.ts",
+    "context/**/*.tsx",
+    "layouts/**/*.ts",
+    "layouts/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "pages/**/*.ts",
+    "pages/**/*.tsx",
+    "services/**/*.ts",
+    "services/**/*.tsx",
+    "types.ts",
+    "constants.ts"
+  ],
+  "exclude": [
+    "server",
+    "supabase",
+    "skills",
+    "dist",
+    "node_modules"
+  ]
 }

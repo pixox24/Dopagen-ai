@@ -61,3 +61,10 @@ npm run dev
 - 前端不再硬编码 API Key，所有请求通过后端代理。
 - 数据库启用了 RLS (Row Level Security)，确保用户数据隔离。
 - 后端 API 使用 JWT 验证用户身份。
+
+## ☁️ GitHub + Vercel 自动部署
+
+项目已提供 GitHub Actions 工作流，可在 push 到 `main` 后自动部署到 Vercel（需要先配置仓库 secrets）。
+
+- 工作流文件：`.github/workflows/ci-cd.yml`
+- 配置说明：`docs/github-vercel-auto-deploy.md`

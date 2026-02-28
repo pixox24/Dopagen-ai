@@ -139,4 +139,4 @@ orioledb_version = ""
 
 
 [functions.generate]
-verify_jwt = false
+verify_jwt = true

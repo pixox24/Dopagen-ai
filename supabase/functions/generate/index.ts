@@ -150,19 +150,21 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeout: numb
   }
 }
 
-// Extend Request type to include Supabase context
-declare global {
-  interface Request {
-    sb?: {
-      auth_user?: string;
-      jwt?: {
-        payload?: {
-          sub?: string;
-          role?: string;
-        };
-      };
-    };
+// Extract user ID from request
+function getUserIdFromRequest(req: Request): string | null {
+  // Try to get from request headers first (Supabase Edge Functions add this)
+  const sbContext = req.headers.get('sb-context')
+  if (sbContext) {
+    try {
+      const context = JSON.parse(sbContext)
+      return context.auth_user || context.jwt?.payload?.sub || null
+    } catch {
+      console.log('[Generate] Failed to parse sb-context header')
+    }
   }
+  
+  // Try request body for userId (passed from frontend)
+  return null
 }
 
 Deno.serve(async (req) => {
@@ -189,29 +191,28 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Server configuration error' }, 500, corsHeaders)
     }
     
-    // Get user from Supabase Edge Function context (auto-verified JWT)
-    // @ts-ignore - Supabase adds this property
-    const userId = req.sb?.auth_user || req.sb?.jwt?.payload?.sub
-    
-    console.log('[Generate] req.sb:', JSON.stringify(req.sb))
-    console.log('[Generate] userId from context:', userId)
-    
-    if (!userId) {
-      console.error('[Generate] No user ID found in request context')
-      return jsonResponse({ error: 'Unauthorized - please login' }, 401, corsHeaders)
-    }
-    
-    console.log(`[Generate] User ${userId} authenticated successfully`)
-
-    // Parse request body
-    let body: unknown
+    // Parse request body first to get userId from body
+    let body: any
     try {
-      body = await req.json()
+      const bodyText = await req.text()
+      body = JSON.parse(bodyText)
     } catch {
       return jsonResponse({ error: 'Invalid JSON body' }, 400, corsHeaders)
     }
+    
+    // Get userId from request body (frontend passes it)
+    const userId = body.userId
+    
+    console.log('[Generate] userId from body:', userId)
+    
+    if (!userId) {
+      console.error('[Generate] No userId found in request body')
+      return jsonResponse({ error: 'Unauthorized - please login' }, 401, corsHeaders)
+    }
+    
+    console.log(`[Generate] User ${userId} authenticated`)
 
-    // Validate request
+    // Validate request structure
     const validation = validateRequest(body)
     if (!validation.valid || !validation.data) {
       return jsonResponse({ error: validation.error }, 400, corsHeaders)

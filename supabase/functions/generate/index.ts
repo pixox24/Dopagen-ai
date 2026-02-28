@@ -52,9 +52,16 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 // Get CORS headers based on request origin
 const getCorsHeaders = (req: Request) => {
   const origin = req.headers.get('origin') || ''
-  const allowedOrigin = ALLOWED_ORIGINS.includes('*') 
+  
+  // Normalize origin (remove trailing slash)
+  const normalizedOrigin = origin.endsWith('/') ? origin.slice(0, -1) : origin
+  
+  // Normalize allowed origins (remove trailing slashes)
+  const normalizedAllowed = ALLOWED_ORIGINS.map(o => o.endsWith('/') ? o.slice(0, -1) : o)
+  
+  const allowedOrigin = normalizedAllowed.includes('*') 
     ? '*' 
-    : ALLOWED_ORIGINS.find(allowed => origin === allowed) || ALLOWED_ORIGINS[0]
+    : normalizedAllowed.find(allowed => normalizedOrigin === allowed) || normalizedAllowed[0]
   
   return {
     'Access-Control-Allow-Origin': allowedOrigin,

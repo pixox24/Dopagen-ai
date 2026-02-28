@@ -74,13 +74,22 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
     };
 
     try {
-        // Call Supabase Edge Function
+        // Get current session token
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        
+        console.log('[API] Calling generate function, token present:', !!token);
+        
+        // Call Supabase Edge Function with explicit auth header
         const { data, error } = await supabase.functions.invoke('generate', {
             body: {
                 modelId: model.name || model.id,
                 prompt: formState['prompt'] || 'Generated Image',
                 params: params,
                 userId: user.id
+            },
+            headers: {
+                Authorization: token ? `Bearer ${token}` : ''
             }
         });
 

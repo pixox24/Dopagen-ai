@@ -1,12 +1,6 @@
 import { GenerateOptions } from '../types';
 import { supabase } from '../lib/supabase';
 
-// Supabase Edge Function URL
-// In production: https://your-project.supabase.co/functions/v1/generate
-// In development: http://localhost:54321/functions/v1/generate
-const EDGE_FUNCTION_URL = import.meta.env.VITE_SUPABASE_EDGE_FUNCTION_URL || 
-  `${import.meta.env.VITE_SUPABASE_URL?.replace('/rest/v1', '')}/functions/v1`;
-
 export interface TaskResponse {
     id: string;
     status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
@@ -21,25 +15,25 @@ export interface SubmitTaskResponse {
     status?: string;
 }
 
+const MAX_GENERATION_WAIT_MS = 120_000;
+const GENERATION_POLL_INTERVAL_MS = 2_000;
+
 /**
- * Submit image generation task to Supabase Edge Function
- * This replaces the old Express backend API call
+ * Submit image generation task to Supabase Edge Function.
  */
 export const submitGenerationTask = async (options: GenerateOptions): Promise<SubmitTaskResponse> => {
     const { model, formState, globalWidth, globalHeight, globalAspectRatio, globalQuality } = options;
     const { schema } = model;
 
-    if (!schema) throw new Error("Model schema is missing.");
+    if (!schema) throw new Error('Model schema is missing.');
 
-    // Get current user
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error("User not authenticated");
+    if (!user) throw new Error('User not authenticated');
 
-    // Build input values
-    const inputValues: Record<string, any> = {};
+    const inputValues: Record<string, unknown> = {};
 
     schema.inputs.forEach(input => {
-        let valueToUse: any = undefined;
+        let valueToUse: unknown;
 
         if (input.generate === 'random_int') {
             valueToUse = Math.floor(Math.random() * 2147483647);
@@ -57,7 +51,6 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
             }
         }
 
-        // Limit seed to positive 32-bit int
         if (input.key.toLowerCase().includes('seed') && typeof valueToUse === 'number') {
             if (valueToUse > 2147483647) valueToUse = Math.floor(Math.random() * 2147483647);
             if (valueToUse < 0) valueToUse = 0;
@@ -74,19 +67,14 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
     };
 
     try {
-        // Get current session token
         const { data: { session } } = await supabase.auth.getSession();
         const token = session?.access_token;
-        
-        console.log('[API] Calling generate function, token present:', !!token);
-        
-        // Call Supabase Edge Function with explicit auth header
+
         const { data, error } = await supabase.functions.invoke('generate', {
             body: {
                 modelId: model.name || model.id,
-                prompt: formState['prompt'] || 'Generated Image',
-                params: params,
-                userId: user.id
+                prompt: formState.prompt || 'Generated Image',
+                params
             },
             headers: {
                 Authorization: token ? `Bearer ${token}` : ''
@@ -94,12 +82,12 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
         });
 
         if (error) {
-            console.error("Edge Function Error:", error);
-            throw new Error(error.message || "Generation failed");
+            console.error('Edge Function Error:', error);
+            throw new Error(error.message || 'Generation failed');
         }
 
         if (!data?.success) {
-            throw new Error(data?.error || "Generation failed");
+            throw new Error(data?.error || 'Generation failed');
         }
 
         return {
@@ -108,14 +96,13 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
             status: data.status || 'PENDING'
         };
     } catch (e: any) {
-        console.error("Submission Error:", e);
-        throw new Error(e.message || "Cannot connect to generation service.");
+        console.error('Submission Error:', e);
+        throw new Error(e.message || 'Cannot connect to generation service.');
     }
 };
 
 /**
- * Get task status from Supabase database
- * Direct query instead of API call
+ * Get task status from Supabase database.
  */
 export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
     try {
@@ -126,7 +113,7 @@ export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
             .single();
 
         if (error || !data) {
-            console.error("Poll Error:", error);
+            console.error('Poll Error:', error);
             return { id: taskId, status: 'PENDING' };
         }
 
@@ -138,41 +125,39 @@ export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
             progress: data.progress
         };
     } catch (e) {
-        console.error("Polling Error:", e);
+        console.error('Polling Error:', e);
         return { id: taskId, status: 'PENDING' };
     }
 };
 
 /**
- * Generate image with polling
+ * Generate image and poll until completion.
  */
 export const generateImage = async (options: GenerateOptions): Promise<string[]> => {
     const submitResponse = await submitGenerationTask(options);
     const { taskId, imageUrl } = submitResponse;
-    
-    // 如果已经返回了 imageUrl，直接返回
+
     if (imageUrl) {
         return [imageUrl];
     }
-    
-    // 否则轮询等待结果
-    while (true) {
-        await new Promise(r => setTimeout(r, 2000));
+
+    const maxAttempts = Math.ceil(MAX_GENERATION_WAIT_MS / GENERATION_POLL_INTERVAL_MS);
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, GENERATION_POLL_INTERVAL_MS));
         const task = await pollTaskStatus(taskId);
-        
+
         if (task.status === 'COMPLETED' && task.resultUrl) {
             return [task.resultUrl];
         }
         if (task.status === 'FAILED') {
-            throw new Error(task.error || "Generation Failed");
+            throw new Error(task.error || 'Generation failed');
         }
     }
+
+    throw new Error('Generation timed out. Please try again.');
 };
 
-/**
- * Get user's generation tasks
- * Direct Supabase query
- */
 export const getUserTasks = async (limit: number = 20) => {
     const { data, error } = await supabase
         .from('generation_tasks')
@@ -181,17 +166,13 @@ export const getUserTasks = async (limit: number = 20) => {
         .limit(limit);
 
     if (error) {
-        console.error("Get Tasks Error:", error);
+        console.error('Get Tasks Error:', error);
         return [];
     }
 
     return data || [];
 };
 
-/**
- * Delete a task
- * Direct Supabase query
- */
 export const deleteTask = async (taskId: string) => {
     const { error } = await supabase
         .from('generation_tasks')
@@ -199,15 +180,11 @@ export const deleteTask = async (taskId: string) => {
         .eq('id', taskId);
 
     if (error) {
-        console.error("Delete Task Error:", error);
+        console.error('Delete Task Error:', error);
         throw new Error(error.message);
     }
 };
 
-/**
- * Get user's images
- * Direct Supabase query
- */
 export const getUserImages = async (limit: number = 50) => {
     const { data, error } = await supabase
         .from('images')
@@ -216,17 +193,13 @@ export const getUserImages = async (limit: number = 50) => {
         .limit(limit);
 
     if (error) {
-        console.error("Get Images Error:", error);
+        console.error('Get Images Error:', error);
         return [];
     }
 
     return data || [];
 };
 
-/**
- * Get public images (for Explore page)
- * Direct Supabase query
- */
 export const getPublicImages = async (limit: number = 50) => {
     const { data, error } = await supabase
         .from('images')
@@ -239,17 +212,13 @@ export const getPublicImages = async (limit: number = 50) => {
         .limit(limit);
 
     if (error) {
-        console.error("Get Public Images Error:", error);
+        console.error('Get Public Images Error:', error);
         return [];
     }
 
     return data || [];
 };
 
-/**
- * Get custom models
- * Direct Supabase query
- */
 export const getCustomModels = async () => {
     const { data, error } = await supabase
         .from('custom_models')
@@ -258,26 +227,27 @@ export const getCustomModels = async () => {
         .order('created_at', { ascending: false });
 
     if (error) {
-        console.error("Get Models Error:", error);
+        console.error('Get Models Error:', error);
         return [];
     }
 
     return data || [];
 };
 
-/**
- * Save custom model
- * Direct Supabase query
- */
 export const saveCustomModel = async (modelData: any) => {
+    const payload = {
+        ...modelData,
+        api_key: null
+    };
+
     const { data, error } = await supabase
         .from('custom_models')
-        .insert(modelData)
+        .insert(payload)
         .select()
         .single();
 
     if (error) {
-        console.error("Save Model Error:", error);
+        console.error('Save Model Error:', error);
         throw new Error(error.message);
     }
 

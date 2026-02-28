@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { supabase, supabaseAuth } from '../supabase';
 
-// 扩展 Express Request 类型
 declare global {
     namespace Express {
         interface Request {
@@ -11,10 +10,6 @@ declare global {
     }
 }
 
-/**
- * 验证用户身份的中间件
- * 从 Authorization header 中提取 Bearer token，使用 Supabase 验证
- */
 export const authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers.authorization;
 
@@ -23,20 +18,17 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
         return;
     }
 
-    const token = authHeader.replace('Bearer ', '');
+    const token = authHeader.slice('Bearer '.length);
 
     try {
-        // 使用 Anon Key 客户端验证 Token 更符合 Auth 逻辑
         const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
 
         if (error || !user) {
-            console.warn('[Auth] Token Validation Failed:', error?.message);
+            console.warn('[Auth] Token validation failed:', error?.message);
             res.status(401).json({ error: 'Invalid or expired token' });
             return;
         }
 
-        // 查询用户 profile 获取角色
-        // 这里使用 service role 的 supabase 客户端来查询 profile，避免 RLS 限制（虽然用户查自己也没问题）
         const { data: profile } = await supabase
             .from('profiles')
             .select('role')
@@ -52,9 +44,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     }
 };
 
-/**
- * 管理员权限中间件（需先经过 authenticate）
- */
 export const requireAdmin = (req: Request, res: Response, next: NextFunction): void => {
     if (req.userRole !== 'admin') {
         res.status(403).json({ error: 'Admin access required' });
@@ -63,10 +52,7 @@ export const requireAdmin = (req: Request, res: Response, next: NextFunction): v
     next();
 };
 
-/**
- * 可选认证：有 token 则验证，无 token 也放行
- */
-export const optionalAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const optionalAuth = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -74,15 +60,15 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
         return;
     }
 
-    const token = authHeader.replace('Bearer ', '');
+    const token = authHeader.slice('Bearer '.length);
 
     try {
         const { data: { user } } = await supabaseAuth.auth.getUser(token);
         if (user) {
             req.userId = user.id;
         }
-    } catch (_) {
-        // 可选认证，忽略错误
+    } catch {
+        // optional auth: ignore errors and continue
     }
 
     next();

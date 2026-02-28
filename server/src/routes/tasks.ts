@@ -3,6 +3,18 @@ import { supabase } from '../supabase';
 import { authenticate } from '../middleware/auth';
 
 const router = Router();
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 100;
+const BIZYAIR_TIMEOUT_MS = 120000;
+
+const toBoundedInt = (value: unknown, fallback: number, min: number, max: number): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const int = Math.trunc(parsed);
+    if (int < min) return min;
+    if (int > max) return max;
+    return int;
+};
 
 // Endpoint for BizyAir API (Make sure this matches the real documentation)
 const BIZYAIR_API_URL = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
@@ -56,7 +68,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
 
 router.get('/', authenticate, async (req: Request, res: Response) => {
     try {
-        const limit = parseInt(req.query.limit as string) || 20;
+        const limit = toBoundedInt(req.query.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
 
         const { data, error } = await supabase
             .from('generation_tasks')
@@ -169,14 +181,17 @@ async function processTask(taskId: string): Promise<void> {
         console.log(`[Worker] Calling BizyAir API...`);
 
         // 4. Call BizyAir
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), BIZYAIR_TIMEOUT_MS);
         const response = await fetch(BIZYAIR_API_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${SERVER_API_KEY}`
             },
-            body: JSON.stringify(payload)
-        });
+            body: JSON.stringify(payload),
+            signal: abortController.signal
+        }).finally(() => clearTimeout(timeoutId));
 
         if (!response.ok) {
             const errorText = await response.text();

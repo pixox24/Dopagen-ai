@@ -27,7 +27,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // 获取用户 profile 信息
   const fetchProfile = async (userId: string, email: string): Promise<User | null> => {
     try {
       const { data, error } = await supabase
@@ -37,12 +36,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .single();
 
       if (error || !data) {
-        // Profile 可能还未创建（触发器延迟），返回基本信息
+        const fallbackName = email.split('@')[0] || 'user';
         return {
           id: userId,
-          username: email.split('@')[0],
+          username: fallbackName,
           email,
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${email.split('@')[0]}`
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${fallbackName}`
         };
       }
 
@@ -59,7 +58,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 初始化：检查现有 session
   useEffect(() => {
     const init = async () => {
       try {
@@ -76,18 +74,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsLoading(false);
       }
     };
-    
-    // 设置超时，避免无限加载
+
     const timeoutId = setTimeout(() => {
       setIsLoading(false);
     }, 3000);
-    
-    init();
-    
-    return () => clearTimeout(timeoutId);
 
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       setSession(newSession);
       if (newSession?.user) {
         const profile = await fetchProfile(newSession.user.id, newSession.user.email || '');
@@ -97,7 +89,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    return () => subscription.unsubscribe();
+    init();
+
+    return () => {
+      clearTimeout(timeoutId);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, password: string): Promise<{ error?: string }> => {

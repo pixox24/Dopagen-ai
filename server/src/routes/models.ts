@@ -3,6 +3,7 @@ import { supabase } from '../supabase';
 import { authenticate } from '../middleware/auth';
 
 const router = Router();
+const MODEL_NAME_MAX = 100;
 
 /**
  * GET /api/models/custom
@@ -12,7 +13,7 @@ router.get('/custom', authenticate, async (req: Request, res: Response) => {
     try {
         const { data, error } = await supabase
             .from('custom_models')
-            .select('*')
+            .select('id, user_id, name, version, description, web_app_id, schema, input_map, thumbnail_url, is_hidden, created_at, updated_at')
             .eq('user_id', req.userId)
             .order('created_at', { ascending: false });
 
@@ -33,10 +34,14 @@ router.get('/custom', authenticate, async (req: Request, res: Response) => {
  */
 router.post('/custom', authenticate, async (req: Request, res: Response) => {
     try {
-        const { name, version, description, web_app_id, schema, input_map, thumbnail_url, api_key } = req.body;
+        const { name, version, description, web_app_id, schema, input_map, thumbnail_url } = req.body;
 
         if (!name) {
             res.status(400).json({ error: 'Model name is required' });
+            return;
+        }
+        if (typeof name !== 'string' || name.length > MODEL_NAME_MAX) {
+            res.status(400).json({ error: `Model name must be a string up to ${MODEL_NAME_MAX} chars` });
             return;
         }
 
@@ -51,10 +56,9 @@ router.post('/custom', authenticate, async (req: Request, res: Response) => {
                 schema: schema || null,
                 input_map: input_map || null,
                 thumbnail_url: thumbnail_url || null,
-                api_key: api_key || null,
                 is_hidden: false
             })
-            .select()
+            .select('id, user_id, name, version, description, web_app_id, schema, input_map, thumbnail_url, is_hidden, created_at, updated_at')
             .single();
 
         if (error) {
@@ -88,7 +92,7 @@ router.patch('/custom/:id', authenticate, async (req: Request, res: Response) =>
             return;
         }
 
-        const allowedFields = ['name', 'version', 'description', 'web_app_id', 'schema', 'input_map', 'thumbnail_url', 'is_hidden', 'api_key'];
+        const allowedFields = ['name', 'version', 'description', 'web_app_id', 'schema', 'input_map', 'thumbnail_url', 'is_hidden'];
         const updates: Record<string, any> = {};
 
         for (const field of allowedFields) {
@@ -103,7 +107,7 @@ router.patch('/custom/:id', authenticate, async (req: Request, res: Response) =>
             .from('custom_models')
             .update(updates)
             .eq('id', id)
-            .select()
+            .select('id, user_id, name, version, description, web_app_id, schema, input_map, thumbnail_url, is_hidden, created_at, updated_at')
             .single();
 
         if (error) {
@@ -165,7 +169,7 @@ router.patch('/custom/:id/toggle-visibility', authenticate, async (req: Request,
             .from('custom_models')
             .update({ is_hidden: !existing.is_hidden, updated_at: new Date().toISOString() })
             .eq('id', id)
-            .select()
+            .select('id, user_id, name, version, description, web_app_id, schema, input_map, thumbnail_url, is_hidden, created_at, updated_at')
             .single();
 
         if (error) {

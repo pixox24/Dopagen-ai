@@ -60,13 +60,11 @@ const DeleteButton = ({ onDelete }: { onDelete: () => void }) => {
 const EditModal = ({ model, isOpen, onClose, onSave }: { model: Model, isOpen: boolean, onClose: () => void, onSave: (id: string, updates: Partial<Model>) => void }) => {
     const [name, setName] = useState(model.name);
     const [desc, setDesc] = useState(model.description);
-    const [apiKey, setApiKey] = useState(model.api_key || '');
 
     useEffect(() => {
         if (isOpen) {
             setName(model.name);
             setDesc(model.description);
-            setApiKey(model.api_key || '');
         }
     }, [isOpen, model]);
 
@@ -75,8 +73,7 @@ const EditModal = ({ model, isOpen, onClose, onSave }: { model: Model, isOpen: b
     const handleSave = () => {
         onSave(model.id, {
             name,
-            description: desc,
-            api_key: apiKey || undefined
+            description: desc
         });
         onClose();
     };
@@ -97,10 +94,6 @@ const EditModal = ({ model, isOpen, onClose, onSave }: { model: Model, isOpen: b
                     <div>
                         <label className="block text-[11px] font-medium uppercase text-carbon-muted mb-2">Description</label>
                         <textarea value={desc} onChange={e => setDesc(e.target.value)} className="w-full p-2.5 rounded carbon-input text-sm h-24 resize-none" />
-                    </div>
-                    <div>
-                        <label className="block text-[11px] font-medium uppercase text-carbon-muted mb-2">Custom API Key</label>
-                        <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Leave empty to use global key" className="w-full p-2.5 rounded carbon-input text-sm" />
                     </div>
                     <div className="pt-2 flex justify-end gap-3">
                         <Button variant="outline" onClick={onClose}>Cancel</Button>
@@ -160,13 +153,6 @@ const ModelList: React.FC = () => {
                                 <div className="flex flex-col">
                                     <div className="flex items-center gap-2">
                                         <span className="font-medium text-white">{model.name}</span>
-                                        {model.api_key && (
-                                            <span title="Uses Custom API Key">
-                                                <svg className="w-3 h-3 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                                                </svg>
-                                            </span>
-                                        )}
                                     </div>
                                     <span className="text-[10px] text-carbon-muted font-mono">{model.id}</span>
                                 </div>

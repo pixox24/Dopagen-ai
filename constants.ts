@@ -1,7 +1,5 @@
 import { Model } from './types';
 
-// NOTE: In a real production app, this key should be hidden behind a backend proxy.
-export const BIZYAIR_API_KEY = 'sk-wxgquflwltzsufpzmycmbykrzitvxgfuxtzbvglveffiizff';
 export const BIZYAIR_API_URL = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
 
 // Standardized Models with explicit UI Schemas

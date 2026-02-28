@@ -48,9 +48,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [customModels, setCustomModels] = useState<Model[]>([]);
   const [hiddenModelIds, setHiddenModelIds] = useState<string[]>([]);
 
-  const [globalApiKey, setGlobalApiKeyState] = useState<string>(() => {
-    return localStorage.getItem('dopa_global_api_key') || '';
-  });
+  const [globalApiKey, setGlobalApiKeyState] = useState<string>('');
 
   const [loadingMessages, setLoadingMessagesState] = useState<string[]>(() => {
     try {
@@ -152,8 +150,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           schema: m.schema,
           input_map: m.input_map,
           thumbnail: m.thumbnail_url,
-          hidden: m.is_hidden,
-          api_key: m.api_key
+          hidden: m.is_hidden
         })));
         setHiddenModelIds(data.filter(m => m.is_hidden).map(m => m.id));
       }
@@ -194,8 +191,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [loadingMessages]);
 
   const setGlobalApiKey = (key: string) => {
+    // Keep this only in memory; never persist secrets to localStorage.
     setGlobalApiKeyState(key);
-    localStorage.setItem('dopa_global_api_key', key);
   };
 
   const setLoadingMessages = (msgs: string[]) => {
@@ -258,8 +255,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           web_app_id: model.web_app_id,
           schema: model.schema,
           input_map: model.input_map,
-          thumbnail_url: model.thumbnail,
-          api_key: model.api_key
+          thumbnail_url: model.thumbnail
         })
         .select()
         .single();

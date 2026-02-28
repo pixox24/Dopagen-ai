@@ -16,7 +16,6 @@ const ModelImport: React.FC = () => {
   const [modelName, setModelName] = useState('');
   const [modelDesc, setModelDesc] = useState('');
   const [thumbnail, setThumbnail] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   
   // Resolution Configuration
@@ -298,7 +297,6 @@ const ModelImport: React.FC = () => {
           isCustom: true,
           schema: parsedSchema,
           thumbnail: thumbnail || undefined,
-          api_key: apiKey || undefined,
           defaultParams: {
               aspect_ratio: defaultRatio,
               quality: defaultQuality,
@@ -457,16 +455,6 @@ const ModelImport: React.FC = () => {
                                     type="file"
                                     onChange={handleThumbnailUpload}
                                     className="w-full text-xs text-carbon-muted"
-                                />
-                             </div>
-                             <div>
-                                <label className="block text-[11px] font-medium uppercase text-carbon-muted mb-2">Custom API Key (Optional)</label>
-                                <input 
-                                    type="password" 
-                                    className="w-full p-2 rounded carbon-input text-sm"
-                                    placeholder="Overrides global key"
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
                                 />
                              </div>
                         </div>

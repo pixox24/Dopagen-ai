@@ -3,6 +3,18 @@ import { supabase } from '../supabase';
 import { authenticate, optionalAuth } from '../middleware/auth';
 
 const router = Router();
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 30;
+const MAX_LIMIT = 100;
+
+const toBoundedInt = (value: unknown, fallback: number, min: number, max: number): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const int = Math.trunc(parsed);
+    if (int < min) return min;
+    if (int > max) return max;
+    return int;
+};
 
 /**
  * GET /api/images
@@ -10,8 +22,8 @@ const router = Router();
  */
 router.get('/', authenticate, async (req: Request, res: Response) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 50;
+        const page = toBoundedInt(req.query.page, DEFAULT_PAGE, 1, 100000);
+        const limit = toBoundedInt(req.query.limit, 50, 1, MAX_LIMIT);
         const offset = (page - 1) * limit;
 
         const { data, error, count } = await supabase
@@ -43,8 +55,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
  */
 router.get('/public', optionalAuth, async (req: Request, res: Response) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 30;
+        const page = toBoundedInt(req.query.page, DEFAULT_PAGE, 1, 100000);
+        const limit = toBoundedInt(req.query.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
         const offset = (page - 1) * limit;
 
         const { data, error, count } = await supabase
@@ -244,6 +256,10 @@ router.post('/batch-delete', authenticate, async (req: Request, res: Response) =
 
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             res.status(400).json({ error: 'ids array is required' });
+            return;
+        }
+        if (ids.length > MAX_LIMIT) {
+            res.status(400).json({ error: `ids array is too large (max ${MAX_LIMIT})` });
             return;
         }
 

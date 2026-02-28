@@ -11,13 +11,14 @@ const router = Router();
 router.post('/signup', async (req: Request, res: Response) => {
     try {
         const { email, password, username } = req.body;
+        const shouldAutoConfirmEmail = process.env.NODE_ENV !== 'production';
 
         if (!email || !password || !username) {
             res.status(400).json({ error: 'Email, password and username are required' });
             return;
         }
 
-        // 检查用户名唯一性
+        // 检查用户名唯一�?
         const { data: existing } = await supabase
             .from('profiles')
             .select('id')
@@ -33,7 +34,7 @@ router.post('/signup', async (req: Request, res: Response) => {
         const { data, error } = await supabase.auth.admin.createUser({
             email,
             password,
-            email_confirm: true, // 跳过邮件验证（开发环境）
+            email_confirm: shouldAutoConfirmEmail, // 跳过邮件验证（开发环境）
             user_metadata: { username }
         });
 
@@ -119,7 +120,7 @@ router.post('/login', async (req: Request, res: Response) => {
  */
 router.post('/logout', authenticate, async (req: Request, res: Response) => {
     try {
-        // Supabase 无需服务端操作，客户端自行清除 session 即可
+        // Supabase 无需服务端操作，客户端自行清�?session 即可
         res.json({ message: 'Logged out successfully' });
     } catch (err) {
         res.status(500).json({ error: 'Logout failed' });
@@ -157,3 +158,4 @@ router.get('/me', authenticate, async (req: Request, res: Response) => {
 });
 
 export default router;
+

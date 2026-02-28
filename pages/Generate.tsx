@@ -177,14 +177,20 @@ const Generate: React.FC = () => {
 
     // Track polling attempts for timeout detection
     const pollingAttempts = useRef<Record<string, number>>({});
+    const tasksRef = useRef<GenerationTask[]>([]);
+
+    useEffect(() => {
+        tasksRef.current = tasks;
+    }, [tasks]);
 
     // --- POLLING LOGIC ---
     useEffect(() => {
-        // Find tasks that are actively running
-        const runningTasks = tasks.filter(t => t.status === 'processing' || t.status === 'queued');
-        if (runningTasks.length === 0) return;
-
         const intervalId = setInterval(async () => {
+            const runningTasks = tasksRef.current.filter(t => t.status === 'processing' || t.status === 'queued');
+            if (runningTasks.length === 0) {
+                return;
+            }
+
             for (const task of runningTasks) {
                 // Skip tasks that haven't received a real backend ID yet
                 if (task.id.startsWith('pending_')) continue;
@@ -252,7 +258,7 @@ const Generate: React.FC = () => {
         }, 3000); // Poll every 3 seconds
 
         return () => clearInterval(intervalId);
-    }, [tasks, addUserImage, user]);
+    }, [addUserImage, user?.id]);
 
     // Close model menu when clicking outside
     useEffect(() => {

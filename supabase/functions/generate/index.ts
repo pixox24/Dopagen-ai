@@ -176,7 +176,11 @@ Deno.serve(async (req) => {
     
     // Get auth header from request
     const authHeader = req.headers.get('authorization') || ''
+    console.log('[Generate] Auth header present:', !!authHeader)
+    console.log('[Generate] Auth header prefix:', authHeader.substring(0, 20))
+    
     if (!authHeader) {
+      console.error('[Generate] Missing authorization header')
       return jsonResponse({ error: 'Missing authorization header' }, 401, corsHeaders)
     }
     
@@ -186,15 +190,20 @@ Deno.serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false }
     })
     
+    console.log('[Generate] Calling getUser()...')
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser()
     
+    if (userError) {
+      console.error('[Generate] getUser() error:', userError)
+    }
+    
     if (userError || !user) {
-      console.error('Auth error:', userError)
+      console.error('[Generate] Auth failed - user:', user, 'error:', userError)
       return jsonResponse({ error: 'Unauthorized - please login' }, 401, corsHeaders)
     }
     
     const userId = user.id
-    console.log(`[Generate] User ${userId} authenticated`)
+    console.log(`[Generate] User ${userId} authenticated successfully`)
 
     // Parse request body
     let body: unknown

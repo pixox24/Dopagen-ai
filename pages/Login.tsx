@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import Button from '../components/Button';
 
 const Login: React.FC = () => {
   const { login, signup, isLoading } = useAuth();
@@ -12,22 +11,33 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     setErrorMsg(null);
+    setIsSubmitting(true);
 
-    if (isSignup) {
-      if (!username) { setErrorMsg("Username required"); return; }
-      if (password.length < 6) { setErrorMsg("Password must be at least 6 characters"); return; }
+    try {
+      if (isSignup) {
+        if (!username.trim()) { setErrorMsg('Username required'); return; }
+        if (password.length < 6) { setErrorMsg('Password must be at least 6 characters'); return; }
 
-      const { error } = await signup(email, password, username);
-      if (error) setErrorMsg(error);
-      else navigate('/');
-    } else {
-      const { error } = await login(email, password);
-      if (error) setErrorMsg(error);
-      else navigate('/');
+        const { error } = await signup(email.trim(), password, username.trim());
+        if (error) setErrorMsg(error);
+        else navigate('/');
+      } else {
+        const { error } = await login(email.trim(), password);
+        if (error) setErrorMsg(error);
+        else navigate('/');
+      }
+    } catch (err) {
+      console.error('[Login] Submit failed:', err);
+      setErrorMsg('Login failed. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -90,17 +100,17 @@ const Login: React.FC = () => {
 
           <button 
               type="submit" 
-              disabled={isLoading}
+              disabled={isLoading || isSubmitting}
               className={`
                   w-full py-3 px-6 rounded-lg font-semibold text-white 
                   bg-gradient-to-r from-cyan-500 via-blue-500 to-cyan-500
                   bg-size-200 animate-gradient
                   transition-all duration-300
-                  ${isLoading ? 'opacity-80 cursor-not-allowed' : 'hover:shadow-[0_0_20px_rgba(6,182,212,0.5)] hover:scale-[1.02]'}
+                  ${(isLoading || isSubmitting) ? 'opacity-80 cursor-not-allowed' : 'hover:shadow-[0_0_20px_rgba(6,182,212,0.5)] hover:scale-[1.02]'}
               `}
               style={{ backgroundSize: '200% 100%' }}
           >
-              {isLoading ? (
+              {(isLoading || isSubmitting) ? (
                   <span className="flex items-center justify-center gap-2">
                       <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>

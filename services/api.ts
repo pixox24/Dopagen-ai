@@ -52,8 +52,10 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
         }
 
         if (input.key.toLowerCase().includes('seed') && typeof valueToUse === 'number') {
-            if (valueToUse > 2147483647) valueToUse = Math.floor(Math.random() * 2147483647);
-            if (valueToUse < 0) valueToUse = 0;
+            const normalizedSeed = Math.max(0, Math.min(2147483647, valueToUse));
+            valueToUse = Number.isFinite(normalizedSeed)
+                ? Math.floor(normalizedSeed)
+                : Math.floor(Math.random() * 2147483647);
         }
 
         if (valueToUse !== undefined) {
@@ -97,7 +99,11 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
         };
     } catch (e: any) {
         console.error('Submission Error:', e);
-        throw new Error(e.message || 'Cannot connect to generation service.');
+        const message = String(e?.message || '');
+        if (message.toLowerCase().includes('timeout')) {
+            throw new Error('AI service timed out. Please retry with lower resolution/quality or try again later.');
+        }
+        throw new Error(message || 'Cannot connect to generation service.');
     }
 };
 

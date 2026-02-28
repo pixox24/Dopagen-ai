@@ -15,7 +15,7 @@ const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') || 'http://localhost:30
 const MAX_REQUEST_SIZE = 10 * 1024 * 1024
 const MAX_PROMPT_LENGTH = 4000
 const MAX_MODEL_ID_LENGTH = 100
-const FETCH_TIMEOUT = 120000
+const FETCH_TIMEOUT = 90000
 
 interface GenerateRequest {
   modelId: string
@@ -34,7 +34,7 @@ interface BizyAirResponse {
   }
   outputs?: Array<{
     data?: {
-      images?: string[]
+      images?: Array<string | { url?: string }>
     }
     file_url?: string
     object_url?: string | { url?: string }
@@ -223,7 +223,7 @@ Deno.serve(async (req) => {
     } catch (fetchError: unknown) {
       const isTimeout = fetchError instanceof Error && fetchError.name === 'AbortError'
       const errorMessage = isTimeout
-        ? `AI service timeout after ${Math.floor(FETCH_TIMEOUT / 1000)} seconds`
+        ? `AI service timeout after ${Math.floor(FETCH_TIMEOUT / 1000)} seconds. Try reducing image size/quality or retry.`
         : 'AI service request failed'
 
       await adminClient
@@ -231,7 +231,7 @@ Deno.serve(async (req) => {
         .update({ status: 'FAILED', error: errorMessage })
         .eq('id', task.id)
 
-      return jsonResponse({ error: errorMessage, taskId: task.id }, isTimeout ? 504 : 502, corsHeaders)
+      return jsonResponse({ error: errorMessage, taskId: task.id, code: isTimeout ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_REQUEST_FAILED' }, isTimeout ? 504 : 502, corsHeaders)
     }
 
     if (!response.ok) {
@@ -274,8 +274,19 @@ Deno.serve(async (req) => {
 
     if (result.outputs?.[0]) {
       const output = result.outputs[0]
-      imageUrl = output.data?.images?.[0] || output.file_url || output.object_url || null
-      if (typeof imageUrl === 'object') imageUrl = imageUrl?.url || null
+      const firstImage = output.data?.images?.[0]
+
+      if (typeof firstImage === 'string') {
+        imageUrl = firstImage
+      } else if (firstImage && typeof firstImage === 'object') {
+        imageUrl = firstImage.url || null
+      } else if (typeof output.file_url === 'string') {
+        imageUrl = output.file_url
+      } else if (typeof output.object_url === 'string') {
+        imageUrl = output.object_url
+      } else if (output.object_url && typeof output.object_url === 'object') {
+        imageUrl = output.object_url.url || null
+      }
     }
 
     imageUrl = imageUrl || result.data?.file_url || null

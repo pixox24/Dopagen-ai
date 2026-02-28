@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
 
 export interface User {
@@ -99,6 +99,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string): Promise<{ error?: string }> => {
     try {
+      if (!isSupabaseConfigured) {
+        return { error: 'Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.' };
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
@@ -113,12 +117,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       return {};
     } catch (err: any) {
+      console.error('[Auth] Login error:', err);
       return { error: err.message || 'Login failed' };
     }
   };
 
   const signup = async (email: string, password: string, username: string): Promise<{ error?: string }> => {
     try {
+      if (!isSupabaseConfigured) {
+        return { error: 'Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.' };
+      }
+
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -139,6 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       return {};
     } catch (err: any) {
+      console.error('[Auth] Signup error:', err);
       return { error: err.message || 'Signup failed' };
     }
   };

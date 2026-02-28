@@ -1,19 +1,22 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { getCurrentAdminLabel, revokeTempAdminAccess } from '../lib/adminAccess';
 
 const AdminLayout: React.FC = () => {
   const { user, logout } = useAuth();
+  const adminLabel = getCurrentAdminLabel(user);
   const navigate = useNavigate();
 
-  if (!user) {
-    // Basic protection, though pages handle it too
-    return <div className="p-10 text-center text-white">Redirecting...</div>;
-  }
-
   const handleLogout = () => {
-    logout();
-    navigate('/login');
+    revokeTempAdminAccess();
+    if (user) {
+      logout();
+      navigate('/login');
+      return;
+    }
+
+    navigate('/admin/login');
   };
 
   const navItemClass = ({ isActive }: { isActive: boolean }) =>
@@ -85,9 +88,9 @@ const AdminLayout: React.FC = () => {
         {/* User Footer */}
         <div className="p-4 border-t border-carbon-border bg-[#0a0a0a]">
              <div className="flex items-center gap-3 mb-3">
-                 <img src={user.avatar} className="w-8 h-8 rounded-full border border-carbon-border" />
+                 <img src={user?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${adminLabel}`} className="w-8 h-8 rounded-full border border-carbon-border" />
                  <div className="overflow-hidden">
-                     <p className="text-sm font-medium text-white truncate">{user.username}</p>
+                     <p className="text-sm font-medium text-white truncate">{adminLabel}</p>
                      <p className="text-[10px] text-carbon-muted truncate">Admin Access</p>
                  </div>
              </div>

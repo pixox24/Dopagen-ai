@@ -3,6 +3,7 @@ import { GeneratedImage, Model } from '../types';
 import { MODELS as DEFAULT_MODELS } from '../constants';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
+import { hasAdminAccess } from '../lib/adminAccess';
 
 interface AppContextType {
   userImages: GeneratedImage[];
@@ -58,6 +59,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return DEFAULT_LOADING_MESSAGES;
     }
   });
+
+
+  const canManageAdminData = useMemo(() => hasAdminAccess(user), [user]);
+
+  const assertAdminMutationAccess = () => {
+    if (!session || !user) {
+      throw new Error('Please log in to perform admin actions.');
+    }
+
+    if (!canManageAdminData) {
+      throw new Error('Admin permission required for this operation.');
+    }
+  };
 
   // ============================================
   // 从 Supabase 加载数据
@@ -133,11 +147,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const fetchCustomModels = useCallback(async () => {
     if (!user || !session) return;
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('custom_models')
         .select('*')
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
+
+      if (!canManageAdminData) {
+        query = query.eq('user_id', user.id);
+      }
+
+      const { data, error } = await query;
 
       if (!error && data) {
         setCustomModels(data.map(m => ({
@@ -157,7 +176,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.error('Failed to fetch custom models:', err);
     }
-  }, [user, session]);
+  }, [user, session, canManageAdminData]);
 
   // 初始加载
   useEffect(() => {
@@ -240,6 +259,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCustomModel = async (model: Model) => {
+    assertAdminMutationAccess();
+
     // 乐观更新
     setCustomModels(prev => [...prev, model]);
 
@@ -270,9 +291,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCustomModel = async (id: string, updates: Partial<Model>) => {
+    assertAdminMutationAccess();
     setCustomModels(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
 
-    if (session) {
+    if (session && user) {
       const dbUpdates: Record<string, any> = {};
       if (updates.name !== undefined) dbUpdates.name = updates.name;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
@@ -281,31 +303,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.thumbnail !== undefined) dbUpdates.thumbnail_url = updates.thumbnail;
       dbUpdates.updated_at = new Date().toISOString();
 
-      await supabase.from('custom_models').update(dbUpdates).eq('id', id);
+      let query = supabase.from('custom_models').update(dbUpdates).eq('id', id);
+      if (!canManageAdminData) query = query.eq('user_id', user.id);
+      await query;
     }
   };
 
   const deleteCustomModel = async (id: string) => {
+    assertAdminMutationAccess();
     setCustomModels(prev => prev.filter(m => m.id !== id));
     setHiddenModelIds(prev => prev.filter(hid => hid !== id));
 
-    if (session) {
-      await supabase.from('custom_models').delete().eq('id', id);
+    if (session && user) {
+      let query = supabase.from('custom_models').delete().eq('id', id);
+      if (!canManageAdminData) query = query.eq('user_id', user.id);
+      await query;
     }
   };
 
   const toggleModelVisibility = async (id: string) => {
+    assertAdminMutationAccess();
     const isCurrentlyHidden = hiddenModelIds.includes(id);
 
     setHiddenModelIds(prev =>
       isCurrentlyHidden ? prev.filter(hid => hid !== id) : [...prev, id]
     );
 
-    if (session) {
-      await supabase
+    if (session && user) {
+      let query = supabase
         .from('custom_models')
         .update({ is_hidden: !isCurrentlyHidden })
         .eq('id', id);
+      if (!canManageAdminData) query = query.eq('user_id', user.id);
+      await query;
     }
   };
 

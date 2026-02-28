@@ -2,76 +2,94 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  # 1. 代码质量检查
-  lint-and-typecheck:
+  frontend-check:
+    name: Frontend Build & Type Check
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: TypeScript Type Check
-      run: npx tsc --noEmit
-      continue-on-error: true  # 暂时允许失败，直到修复所有类型错误
-    
-    - name: Build project
-      run: npm run build
-      
-  # 2. 测试后端
-  test-backend:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: TypeScript type check (frontend)
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        run: npm run build
+
+  backend-check:
+    name: Backend Build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./server
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: './server/package-lock.json'
-    
-    - name: Install backend dependencies
-      run: npm ci
-    
-    - name: Compile TypeScript
-      run: npx tsc --noEmit
-      continue-on-error: true
 
-  # 3. 部署到 Vercel (仅在 main 分支，需要配置 secrets 后才启用)
-  # 注意：需要先在 GitHub Secrets 中配置 VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
-  # 详见 docs/vercel-railway-deploy.md
-  # deploy-frontend:
-  #   needs: [lint-and-typecheck]
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/main'
-  #   
-  #   steps:
-  #   - name: Checkout code
-  #     uses: actions/checkout@v4
-  #   
-  #   - name: Deploy to Vercel
-  #     uses: amondnet/vercel-action@v25
-  #     with:
-  #       vercel-token: ${{ secrets.VERCEL_TOKEN }}
-  #       vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-  #       vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-  #       working-directory: ./
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ./server/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: TypeScript type check (backend)
+        run: npx tsc --noEmit
+
+      - name: Build backend
+        run: npm run build
+
+  deploy-vercel:
+    name: Deploy to Vercel (production)
+    needs: [frontend-check, backend-check]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != ''
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Vercel CLI
+        run: npm i -g vercel@latest
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Build with Vercel
+        run: vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Deploy to Vercel production
+        run: vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

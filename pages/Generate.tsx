@@ -9,6 +9,7 @@ import { DottedSurface } from '../components/ui/dotted-surface';
 import ImageZoom from '../components/ImageZoom';
 import ImageDetailModal from '../components/ImageDetailModal';
 import { GeneratedImage, GenerationTask } from '../types';
+import { downloadImageToLocal } from '../lib/download';
 
 // Default Thumbnail for Models
 const DEFAULT_MODEL_THUMB = `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzExMSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjIwIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==`;
@@ -367,6 +368,8 @@ const Generate: React.FC = () => {
     const mainPromptInput = visibleInputs.find(i => i.type === 'textarea' && (i.label === 'Prompt' || i.label === 'Text Input'));
     const negativePromptInput = visibleInputs.find(i => i.label === 'Negative Prompt');
     const otherInputs = visibleInputs.filter(i => i !== mainPromptInput && i !== negativePromptInput && i.type !== 'image');
+    const hasDenseControls = otherInputs.length >= 8 || imageInputs.length >= 2;
+    const inputImageBoxClass = hasDenseControls ? 'min-h-[72px] aspect-[4/3]' : 'min-h-[96px] aspect-square';
 
     const handleGenerate = async () => {
         if (!user) { alert("Please log in."); return; }
@@ -484,10 +487,10 @@ const Generate: React.FC = () => {
             <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
 
             <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                <div className="lg:col-span-4 h-[700px]">
-                    <div className="carbon-card p-6 flex flex-col h-full overflow-hidden">
+                <div className="lg:col-span-4">
+                    <div className="carbon-card p-6 flex flex-col lg:min-h-[700px]">
                         {/* Scrollable Content Area */}
-                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-6">
+                        <div className="space-y-6">
 
                         {/* Model Selector */}
                         <div className="flex items-center justify-between z-20">
@@ -526,12 +529,12 @@ const Generate: React.FC = () => {
                                     {imageInputs.map((input) => (
                                         <div key={input.key} className="relative flex flex-col items-center gap-1">
                                             {!formState[input.key] ? (
-                                                <div onClick={() => !isLoading && triggerUpload(input.key)} className={`w-full aspect-square border border-dashed border-carbon-border rounded-lg bg-carbon-surface/50 hover:bg-carbon-surface cursor-pointer flex flex-col items-center justify-center gap-2 group min-h-[60px] ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                <div onClick={() => !isLoading && triggerUpload(input.key)} className={`w-full ${inputImageBoxClass} border border-dashed border-carbon-border rounded-lg bg-carbon-surface/50 hover:bg-carbon-surface cursor-pointer flex flex-col items-center justify-center gap-2 group ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
                                                     <div className="p-1.5 rounded-full bg-carbon-card border border-carbon-border group-hover:border-white/20"><svg className="w-3 h-3 text-carbon-muted group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg></div>
                                                     <span className="text-[9px] text-carbon-muted">{input.label}</span>
                                                 </div>
                                             ) : (
-                                                <div className={`relative w-full aspect-square group rounded-lg overflow-hidden border border-carbon-border bg-black/40 ${isLoading ? 'opacity-50' : ''}`}>
+                                                <div className={`relative w-full ${inputImageBoxClass} group rounded-lg overflow-hidden border border-carbon-border bg-black/40 ${isLoading ? 'opacity-50' : ''}`}>
                                                     <img src={formState[input.key]} alt="Input" className="w-full h-full object-contain bg-black/50" />
                                                     <div className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer" onClick={() => !isLoading && handleInputChange(input.key, null)}>
                                                         <div className="p-1.5 bg-red-500/80 text-white rounded-full"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></div>
@@ -565,7 +568,7 @@ const Generate: React.FC = () => {
 
                         {/* Params & Settings */}
                         {otherInputs.length > 0 && (
-                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 max-h-60 overflow-y-auto custom-scrollbar pr-1 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <div className={`space-y-4 pt-2 border-t border-carbon-border/50 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
                                 {otherInputs.map(input => (
                                     <div key={input.key} className="space-y-1.5">
                                         <label className="flex items-center justify-between text-[10px] font-medium text-carbon-text">
@@ -714,62 +717,43 @@ const Generate: React.FC = () => {
                                         
                                         {/* Bottom Action Bar */}
                                         <div className="flex items-center justify-center gap-3 pb-4 px-4">
-                                            {/* HD Zoom Button - Prominent */}
                                             <button 
-                                                className="px-4 py-2 bg-white/10 backdrop-blur-sm hover:bg-white/20 rounded-full text-white text-sm font-medium transition-all duration-300 hover:scale-105 flex items-center gap-2"
-                                                title="超清放大"
+                                                type="button"
+                                                onClick={() => alert('图片超清功能即将上线')}
+                                                className="px-4 py-2 bg-white/10 backdrop-blur-sm hover:bg-white/20 rounded-full text-white text-sm font-medium transition-all duration-300 hover:scale-105"
+                                                title="图片超清（占位）"
                                             >
-                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                                </svg>
-                                                <span className="text-base">超清放大</span>
+                                                图片超清
                                             </button>
-                                            
-                                            {/* Other Action Buttons - Circular with 20% transparent bg */}
-                                            <div className="flex items-center gap-2">
-                                                {/* Publish Button */}
-                                                <button 
-                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
-                                                    title="Publish"
-                                                >
-                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0012 9.75c-2.551 0-5.053.2-7.5.582V21M3 21h18M12 6.75h.008v.008H12V6.75z" />
-                                                    </svg>
-                                                </button>
-                                                
-                                                {/* Download Button */}
-                                                <button 
-                                                    onClick={() => {
-                                                        const link = document.createElement('a');
-                                                        link.href = displayedImageUrl;
-                                                        link.download = `dopa-gen-${Date.now()}.jpg`;
-                                                        link.target = '_blank';
-                                                        link.click();
-                                                    }}
-                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
-                                                    title="Download"
-                                                >
-                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                                    </svg>
-                                                </button>
-                                                
-                                                {/* Delete Button */}
-                                                <button 
-                                                    onClick={() => {
-                                                        if (activeTaskId) {
-                                                            setTasks(prev => prev.filter(t => t.id !== activeTaskId));
-                                                            setActiveTaskId(null);
-                                                        }
-                                                    }}
-                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-red-500/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
-                                                    title="Delete"
-                                                >
-                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                                                    </svg>
-                                                </button>
-                                            </div>
+
+                                            <button 
+                                                type="button"
+                                                onClick={async () => {
+                                                    if (!displayedImageUrl) return;
+                                                    try {
+                                                        await downloadImageToLocal(displayedImageUrl, `dopa-gen-${Date.now()}.jpg`);
+                                                    } catch (error) {
+                                                        console.error('Download failed:', error);
+                                                    }
+                                                }}
+                                                className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
+                                                title="下载到本地"
+                                            >
+                                                <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                </svg>
+                                            </button>
+
+                                            <button 
+                                                type="button"
+                                                onClick={() => alert('Publish 功能即将上线')}
+                                                className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
+                                                title="Publish（占位）"
+                                            >
+                                                <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                                                </svg>
+                                            </button>
                                         </div>
                                     </div>
                                 ) : null}

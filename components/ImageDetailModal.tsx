@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { GeneratedImage } from '../types';
 import Button from './Button';
+import { downloadImageToLocal } from '../lib/download';
 
 interface ImageDetailModalProps {
     image: GeneratedImage | null;
@@ -35,24 +36,9 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
 
     const handleDownload = async () => {
         try {
-            // Fetch image as blob to force download
-            const response = await fetch(image.url);
-            const blob = await response.blob();
-            const blobUrl = URL.createObjectURL(blob);
-            
-            const link = document.createElement('a');
-            link.href = blobUrl;
-            link.download = `dopa-gen-${image.id}-${Date.now()}.jpg`;
-            document.body.appendChild(link);
-            link.click();
-            
-            // Cleanup
-            document.body.removeChild(link);
-            URL.revokeObjectURL(blobUrl);
+            await downloadImageToLocal(image.url, `dopa-gen-${image.id}-${Date.now()}.jpg`);
         } catch (error) {
             console.error('Download failed:', error);
-            // Fallback: open in new tab
-            window.open(image.url, '_blank');
         }
     };
 

@@ -88,9 +88,43 @@ const Login: React.FC = () => {
             </div>
           )}
 
-          <Button type="submit" variant="primary" className="w-full" size="lg" isLoading={isLoading} disabled={isLoading}>
-            {isSignup ? "Sign Up" : "Sign In"}
-          </Button>
+          <button 
+              type="submit" 
+              disabled={isLoading}
+              className={`
+                  w-full py-3 px-6 rounded-lg font-semibold text-white 
+                  bg-gradient-to-r from-cyan-500 via-blue-500 to-cyan-500
+                  bg-size-200 animate-gradient
+                  transition-all duration-300
+                  ${isLoading ? 'opacity-80 cursor-not-allowed' : 'hover:shadow-[0_0_20px_rgba(6,182,212,0.5)] hover:scale-[1.02]'}
+              `}
+              style={{ backgroundSize: '200% 100%' }}
+          >
+              {isLoading ? (
+                  <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>{isSignup ? 'Creating Account...' : 'Signing In...'}</span>
+                  </span>
+              ) : (
+                  isSignup ? "Sign Up" : "Sign In"
+              )}
+          </button>
+          <style>{`
+              @keyframes gradient {
+                  0% { background-position: 0% 50%; }
+                  50% { background-position: 100% 50%; }
+                  100% { background-position: 0% 50%; }
+              }
+              .animate-gradient {
+                  animation: gradient 2s ease infinite;
+              }
+              .bg-size-200 {
+                  background-size: 200% 100%;
+              }
+          `}</style>
 
           <div className="text-center text-xs text-carbon-muted pt-4">
             <span className="opacity-70">{isSignup ? "Already have an account?" : "No account yet?"}</span>

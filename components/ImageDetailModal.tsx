@@ -33,14 +33,27 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
         navigator.clipboard.writeText(image.prompt);
     };
 
-    const handleDownload = () => {
-        const link = document.createElement('a');
-        link.href = image.url;
-        link.download = `dopa-gen-${image.id}.jpg`;
-        link.target = "_blank";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const handleDownload = async () => {
+        try {
+            // Fetch image as blob to force download
+            const response = await fetch(image.url);
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            link.download = `dopa-gen-${image.id}-${Date.now()}.jpg`;
+            document.body.appendChild(link);
+            link.click();
+            
+            // Cleanup
+            document.body.removeChild(link);
+            URL.revokeObjectURL(blobUrl);
+        } catch (error) {
+            console.error('Download failed:', error);
+            // Fallback: open in new tab
+            window.open(image.url, '_blank');
+        }
     };
 
     // Use joined user data or fallback

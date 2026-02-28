@@ -7,22 +7,6 @@ export const BIZYAIR_API_URL = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/
 // Standardized Models with explicit UI Schemas
 export const MODELS: Model[] = [
   { 
-    id: 'z-image-turbo', 
-    name: 'Z-Image Turbo', 
-    version: '2.1', 
-    description: 'High-speed standard generation',
-    schema: {
-        model_id: 46445,
-        inputs: [
-            { key: "6:CLIPTextEncode.text", label: "Prompt", type: "textarea", required: true },
-            { key: "13:EmptySD3LatentImage.width", label: "Width", type: "hidden", mapping: "width" },
-            { key: "13:EmptySD3LatentImage.height", label: "Height", type: "hidden", mapping: "height" },
-            { key: "13:EmptySD3LatentImage.batch_size", label: "Batch Size", type: "select", options: ["1", "2", "3", "4"], defaultValue: 1 },
-            { key: "3:KSampler.seed", label: "Seed", type: "hidden", generate: "random_int" }
-        ]
-    }
-  },
-  { 
     id: 'qwen-edit-2512', 
     name: 'QwenEdit 2.5', 
     version: '2.5', 
@@ -115,7 +99,7 @@ export const MOCK_PUBLIC_IMAGES = [
     createdAt: Date.now(),
     isPublic: true,
     userId: 'user-demo',
-    model: 'Z-Image Turbo'
+    model: 'QwenEdit 2.5'
   },
   {
     id: 'pub-2',
@@ -126,6 +110,6 @@ export const MOCK_PUBLIC_IMAGES = [
     createdAt: Date.now(),
     isPublic: true,
     userId: 'user-demo',
-    model: 'Z-Image Turbo'
+    model: 'QwenEdit 2.5'
   }
 ];

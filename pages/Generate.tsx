@@ -512,7 +512,7 @@ const Generate: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Inputs */}
+                        {/* Inputs - Dynamic Height */}
                         {imageInputs.length > 0 && (
                             <div className="space-y-3">
                                 <label className="block text-[10px] font-medium uppercase text-carbon-muted tracking-wide">Input Images <span className="text-red-400">*</span></label>
@@ -536,6 +536,11 @@ const Generate: React.FC = () => {
                                     ))}
                                 </div>
                             </div>
+                        )}
+                        
+                        {/* Dynamic spacing based on content */}
+                        {(otherInputs.length > 0 || mainPromptInput || negativePromptInput) && (
+                            <div className="h-2"></div>
                         )}
 
                         {mainPromptInput && (
@@ -586,9 +591,58 @@ const Generate: React.FC = () => {
                         </div>
 
                         <div className="pt-2">
-                            <Button onClick={handleGenerate} disabled={(!generationPrompt && !mainPromptInput) || isLoading} isLoading={isLoading} className="w-full py-3">
-                                {isLoading ? 'Queued' : 'Generate'}
-                            </Button>
+                            {/* Aurora Gradient Generate Button */}
+                            <button 
+                                onClick={handleGenerate} 
+                                disabled={(!generationPrompt && !mainPromptInput) || isLoading}
+                                className={`
+                                    relative w-full py-3 px-6 rounded-lg font-semibold text-white 
+                                    overflow-hidden transition-all duration-500
+                                    disabled:opacity-50 disabled:cursor-not-allowed
+                                    ${isLoading ? '' : 'hover:scale-[1.02] hover:shadow-[0_8px_32px_rgba(79,172,254,0.4)]'}
+                                `}
+                                style={{
+                                    background: isLoading 
+                                        ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                                        : 'linear-gradient(135deg, #667eea 0%, #764ba2 25%, #f093fb 50%, #4facfe 75%, #43e97b 100%)',
+                                    backgroundSize: '200% 200%',
+                                    animation: isLoading ? 'none' : 'gradientFlow 3s ease infinite',
+                                }}
+                            >
+                                {/* Flowing Blur Effect when Generating */}
+                                {isLoading && (
+                                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent blur-xl" 
+                                         style={{ animation: 'flowBlur 2s ease-in-out infinite' }}></div>
+                                )}
+                                
+                                {/* Content */}
+                                <span className="relative z-10 flex items-center justify-center gap-2">
+                                    {isLoading ? (
+                                        <>
+                                            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            <span>Queued</span>
+                                        </>
+                                    ) : (
+                                        'Generate'
+                                    )}
+                                </span>
+                            </button>
+                            
+                            {/* Inline Styles for Animations */}
+                            <style>{`
+                                @keyframes gradientFlow {
+                                    0% { background-position: 0% 50%; }
+                                    50% { background-position: 100% 50%; }
+                                    100% { background-position: 0% 50%; }
+                                }
+                                @keyframes flowBlur {
+                                    0% { transform: translateX(-100%) skewX(-15deg); }
+                                    100% { transform: translateX(100%) skewX(-15deg); }
+                                }
+                            `}</style>
                         </div>
                         {errorMsg && <div className="p-3 bg-red-900/10 border border-red-900/20 rounded-md"><p className="text-red-400 text-xs">{errorMsg}</p></div>}
                         </div>
@@ -629,10 +683,89 @@ const Generate: React.FC = () => {
                                         ))}
                                     </div>
                                 ) : displayedImageUrl ? (
-                                    <>
-                                        {activeBatchIndex !== null && <button onClick={() => setActiveBatchIndex(null)} className="absolute top-4 left-4 z-20 px-3 py-1.5 bg-black/80 backdrop-blur rounded text-white text-xs border border-white/10 hover:bg-white hover:text-black transition-colors flex items-center gap-1">Grid View</button>}
-                                        <img src={displayedImageUrl} alt="Output" className="max-h-full max-w-full object-contain cursor-zoom-in relative z-10 shadow-2xl" onClick={() => setZoomUrl(displayedImageUrl)} />
-                                    </>
+                                    <div className="relative w-full h-full flex flex-col">
+                                        {/* Top Bar */}
+                                        <div className="absolute top-4 left-4 z-20 flex gap-2">
+                                            {activeBatchIndex !== null && (
+                                                <button 
+                                                    onClick={() => setActiveBatchIndex(null)} 
+                                                    className="px-3 py-1.5 bg-black/80 backdrop-blur rounded text-white text-xs border border-white/10 hover:bg-white hover:text-black transition-colors flex items-center gap-1"
+                                                >
+                                                    Grid View
+                                                </button>
+                                            )}
+                                        </div>
+                                        
+                                        {/* Image */}
+                                        <div className="flex-1 flex items-center justify-center p-4">
+                                            <img 
+                                                src={displayedImageUrl} 
+                                                alt="Output" 
+                                                className="max-h-full max-w-full object-contain cursor-zoom-in relative z-10 shadow-2xl" 
+                                                onClick={() => setZoomUrl(displayedImageUrl)} 
+                                            />
+                                        </div>
+                                        
+                                        {/* Bottom Action Bar */}
+                                        <div className="flex items-center justify-center gap-3 pb-4 px-4">
+                                            {/* HD Zoom Button - Prominent */}
+                                            <button 
+                                                className="px-4 py-2 bg-white/10 backdrop-blur-sm hover:bg-white/20 rounded-full text-white text-sm font-medium transition-all duration-300 hover:scale-105 flex items-center gap-2"
+                                                title="超清放大"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                                </svg>
+                                                <span className="text-base">超清放大</span>
+                                            </button>
+                                            
+                                            {/* Other Action Buttons - Circular with 20% transparent bg */}
+                                            <div className="flex items-center gap-2">
+                                                {/* Publish Button */}
+                                                <button 
+                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
+                                                    title="Publish"
+                                                >
+                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0012 9.75c-2.551 0-5.053.2-7.5.582V21M3 21h18M12 6.75h.008v.008H12V6.75z" />
+                                                    </svg>
+                                                </button>
+                                                
+                                                {/* Download Button */}
+                                                <button 
+                                                    onClick={() => {
+                                                        const link = document.createElement('a');
+                                                        link.href = displayedImageUrl;
+                                                        link.download = `dopa-gen-${Date.now()}.jpg`;
+                                                        link.target = '_blank';
+                                                        link.click();
+                                                    }}
+                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
+                                                    title="Download"
+                                                >
+                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                    </svg>
+                                                </button>
+                                                
+                                                {/* Delete Button */}
+                                                <button 
+                                                    onClick={() => {
+                                                        if (activeTaskId) {
+                                                            setTasks(prev => prev.filter(t => t.id !== activeTaskId));
+                                                            setActiveTaskId(null);
+                                                        }
+                                                    }}
+                                                    className="w-10 h-10 rounded-full bg-white/10 hover:bg-red-500/20 backdrop-blur-sm flex items-center justify-center transition-all duration-300 hover:scale-110 group"
+                                                    title="Delete"
+                                                >
+                                                    <svg className="w-5 h-5 text-white/80 group-hover:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 ) : null}
                             </div>
                         </div>
@@ -668,18 +801,30 @@ const Generate: React.FC = () => {
                 </div>
             </section>
 
-            {/* Feed */}
+            {/* Feed - Pinterest Style */}
             <section className="mt-16 pt-8 border-t border-carbon-border">
                 <h2 className="text-xl font-semibold text-carbon-text mb-8">Excellent Template</h2>
-                <div className="columns-2 md:columns-3 lg:columns-4 xl:columns-5 gap-4 space-y-4 masonry-grid">
-                    {publicImages.slice(0, 15).map((img: GeneratedImage) => (
-                        <FeedItem
-                            key={img.id}
-                            img={img}
-                            onClick={setSelectedFeedImage}
-                            onRecreate={handleRecreate}
-                        />
+                {/* Pinterest-style Masonry Grid with improved spacing */}
+                <div className="columns-2 sm:columns-3 md:columns-4 lg:columns-5 gap-4 space-y-4">
+                    {publicImages.slice(0, 20).map((img: GeneratedImage, index) => (
+                        <div 
+                            key={img.id} 
+                            className="break-inside-avoid mb-4"
+                            style={{ animationDelay: `${index * 50}ms` }}
+                        >
+                            <FeedItem
+                                img={img}
+                                onClick={setSelectedFeedImage}
+                                onRecreate={handleRecreate}
+                            />
+                        </div>
                     ))}
+                </div>
+                {/* Load More Button */}
+                <div className="flex justify-center mt-12">
+                    <Button variant="outline" size="sm" className="px-8">
+                        Load More
+                    </Button>
                 </div>
             </section>
 

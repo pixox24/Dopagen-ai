@@ -99,27 +99,30 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
 };
 
 /**
- * 查询任务状态 - 调用 check-task Edge Function（使用 Service Role，绕过 RLS）
+ * 查询任务状态 - 使用原生 fetch 调用 check-task Edge Function
+ * 绕开 supabase-js 内部的 AbortController，防止轮询被意外中止
  */
+const SUPABASE_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
 export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
     try {
-        const { data, error } = await supabase.functions.invoke('check-task', {
-            body: { taskId }
+        const response = await fetch(`${SUPABASE_FUNCTIONS_URL}/check-task`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'apikey': SUPABASE_ANON_KEY,
+            },
+            body: JSON.stringify({ taskId })
         });
 
-        if (error) {
-            // 忽略 AbortError，这是 React 组件正常重渲染导致的
-            if (error.message?.includes('abort') || error.name === 'AbortError') {
-                return { id: taskId, status: 'PENDING' };
-            }
-            console.error("Poll Error:", error);
+        if (!response.ok) {
+            console.warn(`[Poll] check-task returned ${response.status}`);
             return { id: taskId, status: 'PENDING' };
         }
 
-        if (!data) {
-            return { id: taskId, status: 'PENDING' };
-        }
-
+        const data = await response.json();
         return {
             id: taskId,
             status: data.status || 'PENDING',

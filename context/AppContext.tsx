@@ -1,8 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
-import { GeneratedImage, Model } from '../types';
+import { GeneratedImage, Model, GenerationTask } from '../types';
+import { pollTaskStatus } from '../services/api';
 import { MODELS as DEFAULT_MODELS } from '../constants';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 interface AppContextType {
   userImages: GeneratedImage[];
@@ -24,11 +27,18 @@ interface AppContextType {
   loadingMessages: string[];
   setLoadingMessages: (msgs: string[]) => void;
   refreshImages: () => Promise<void>;
+  // 任务管理
+  tasks: GenerationTask[];
+  setTasks: React.Dispatch<React.SetStateAction<GenerationTask[]>>;
+  activeTaskId: string | null;
+  setActiveTaskId: (id: string | null) => void;
+  isLoadingTasks: boolean;
+  deleteTask: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DEFAULT_LOADING_MESSAGES = [
+const FALLBACK_LOADING_MESSAGES = [
   "INITIALIZING NEURAL PATHWAYS",
   "INJECTING DOPAMINE",
   "ALIGNING TENSORS",
@@ -47,6 +57,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [customModels, setCustomModels] = useState<Model[]>([]);
   const [hiddenModelIds, setHiddenModelIds] = useState<string[]>([]);
+  const [globalModels, setGlobalModels] = useState<Model[]>([]);
 
   // API Key 使用 sessionStorage 替代 localStorage，减少 XSS 窃取风险
   // sessionStorage 在标签页关闭时自动清除
@@ -54,18 +65,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return sessionStorage.getItem('dopa_global_api_key') || '';
   });
 
-  const [loadingMessages, setLoadingMessagesState] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('dopa_loading_messages');
-      return saved ? JSON.parse(saved) : DEFAULT_LOADING_MESSAGES;
-    } catch {
-      return DEFAULT_LOADING_MESSAGES;
-    }
-  });
+  const [loadingMessages, setLoadingMessagesState] = useState<string[]>(FALLBACK_LOADING_MESSAGES);
+
+  // 任务管理状态 (全局持久)
+  const [tasks, setTasks] = useState<GenerationTask[]>([]);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const pollingAttempts = React.useRef<Record<string, number>>({});
 
   // ============================================
-  // 从 Supabase 加载数据
+  // 从后端 API + Supabase 加载数据
   // ============================================
+
+  // 从后端公开 API 获取管理员配置的全局模型
+  const fetchGlobalModels = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/public/models`);
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalModels((data || []).map((m: any) => ({
+          id: m.id,
+          name: m.name,
+          version: m.version || '1.0',
+          description: m.description || '',
+          isCustom: true,
+          web_app_id: m.web_app_id,
+          schema: m.schema,
+          input_map: m.input_map,
+          thumbnail: m.thumbnail_url,
+          hidden: m.is_hidden,
+          api_key: m.api_key,
+        })));
+      }
+    } catch {
+      // 后端不可用时静默降级
+    }
+  }, []);
+
+  // 从后端获取管理员配置的加载消息
+  const fetchLoadingMessages = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/public/settings`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.loadingMessages?.length) {
+          setLoadingMessagesState(data.loadingMessages);
+        }
+      }
+    } catch {
+      // 后端不可用时使用默认值
+    }
+  }, []);
 
   const fetchUserImages = useCallback(async () => {
     if (!user || !session) return;
@@ -74,7 +123,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .from('images')
         .select(`
           *,
-          profiles:user_id (username, avatar_url)
+          profiles(username, avatar_url)
         `)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
@@ -106,7 +155,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const { data, error } = await supabase
         .from('images')
-        .select(`*, profiles:user_id (username, avatar_url)`)
+        .select(`*, profiles(username, avatar_url)`)
         .eq('is_public', true)
         .order('created_at', { ascending: false })
         .limit(30);
@@ -171,7 +220,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await Promise.all([
         fetchUserImages(),
         fetchPublicImages(),
-        fetchCustomModels()
+        fetchCustomModels(),
+        fetchGlobalModels(),
+        fetchLoadingMessages(),
       ]);
       setIsLoadingData(false);
     };
@@ -179,21 +230,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (user && session) {
       loadData();
     } else {
-      // 未登录时也加载公开图片
-      fetchPublicImages();
+      // 未登录时也加载公开数据
+      Promise.all([fetchPublicImages(), fetchGlobalModels(), fetchLoadingMessages()]);
       setUserImages([]);
       setCustomModels([]);
     }
-  }, [user, session, fetchUserImages, fetchPublicImages, fetchCustomModels]);
+  }, [user, session, fetchUserImages, fetchPublicImages, fetchCustomModels, fetchGlobalModels, fetchLoadingMessages]);
+
+  /**
+   * 任务轮询逻辑 - 全局运行 (性能优化版)
+   */
+  // 使用 ref 跟踪当前轮询的任务 ID，避免在 Effect 内部读取 tasks 导致循环触发
+  const runningTaskIdsRef = React.useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // 找出所有运行中且有后端 ID 的任务
+    const currentRunning = tasks
+      .filter(t => (t.status === 'processing' || t.status === 'queued') && !t.id.startsWith('pending_'))
+      .map(t => t.id);
+
+    const currentSet = new Set(currentRunning);
+
+    // 如果运行中的任务集合没有变化，不重新启动定时器
+    const hasChanged = currentRunning.length !== runningTaskIdsRef.current.size ||
+      currentRunning.some(id => !runningTaskIdsRef.current.has(id));
+
+    if (!hasChanged) return;
+
+    runningTaskIdsRef.current = currentSet;
+    if (currentRunning.length === 0) return;
+
+    const intervalId = setInterval(async () => {
+      // 内部通过 ref 获取最新的 ID 集合
+      const idsToPoll = Array.from(runningTaskIdsRef.current);
+
+      for (const taskId of idsToPoll) {
+        pollingAttempts.current[taskId] = (pollingAttempts.current[taskId] || 0) + 1;
+
+        try {
+          const statusData = await pollTaskStatus(taskId);
+
+          if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
+            const completedAt = Date.now();
+
+            // 需要在闭包内找到原始任务以计算耗时
+            setTasks(prev => {
+              const task = prev.find(t => t.id === taskId);
+              if (!task) return prev;
+
+              const duration = task.startedAt ? Math.floor((completedAt - task.startedAt) / 1000) : 0;
+
+              // 自动添加到用户图库 (异步)
+              addUserImage({
+                id: 'img_' + Date.now(),
+                url: statusData.resultUrl || '',
+                images: statusData.resultUrl ? [statusData.resultUrl] : [],
+                prompt: task.prompt,
+                width: task.width,
+                height: task.height,
+                createdAt: Date.now(),
+                isPublic: false,
+                userId: user?.id || 'anon',
+                model: task.modelName,
+                modelId: task.modelId,
+                duration
+              });
+
+              return prev.map(t => t.id === taskId ? {
+                ...t,
+                status: 'completed',
+                imageUrl: statusData.resultUrl,
+                images: statusData.resultUrl ? [statusData.resultUrl] : [],
+                completedAt,
+                duration
+              } : t);
+            });
+
+            delete pollingAttempts.current[taskId];
+          } else if (statusData.status === 'FAILED') {
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: statusData.error } : t));
+            delete pollingAttempts.current[taskId];
+          } else if (pollingAttempts.current[taskId] > 40) { // 提高超时容忍度到 120s
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: 'Generation timeout' } : t));
+            delete pollingAttempts.current[taskId];
+          }
+        } catch (e) {
+          console.error("Polling error for " + taskId, e);
+        }
+      }
+    }, 4000); // 稍微调低频率减少压力
+
+    return () => clearInterval(intervalId);
+  }, [tasks, user]); // 虽然依赖 tasks，但内部通过 Ref 比较集合变化来决定是否重启定时器
+
+  const deleteTask = useCallback((id: string) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    setActiveTaskId(prev => prev === id ? null : prev);
+    if (pollingAttempts.current[id]) delete pollingAttempts.current[id];
+  }, []);
+
+  const activeTask = useMemo(() => tasks.find(t => t.id === activeTaskId), [tasks, activeTaskId]);
+  const isLoadingTasks = useMemo(() => activeTask?.status === 'processing' || activeTask?.status === 'queued', [activeTask]);
 
   // ============================================
   // 数据操作方法
   // ============================================
 
-  // loading messages 持久化到 localStorage（非敏感数据）
-  useEffect(() => {
-    localStorage.setItem('dopa_loading_messages', JSON.stringify(loadingMessages));
-  }, [loadingMessages]);
+  // loading messages 现在由后端管理，不再 localStorage 持久化
 
   const setGlobalApiKey = (key: string) => {
     setGlobalApiKeyState(key);
@@ -359,12 +502,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 计算派生状态
   // ============================================
 
+  // 合并模型：内置 + 全局（管理员上传）+ 用户自定义
   const allModels = useMemo(() => {
-    return [...DEFAULT_MODELS, ...customModels].map(m => ({
+    const modelMap = new Map<string, Model>();
+
+    // 1. 先放入内置模型
+    DEFAULT_MODELS.forEach(m => modelMap.set(m.id, m));
+
+    // 2. 放入全局模型（覆盖可能存在的同 ID 内置模型）
+    globalModels.forEach(m => modelMap.set(m.id, m));
+
+    // 3. 放入用户自定义模型（覆盖同 ID）
+    customModels.forEach(m => modelMap.set(m.id, m));
+
+    return Array.from(modelMap.values()).map(m => ({
       ...m,
       hidden: hiddenModelIds.includes(m.id)
     }));
-  }, [customModels, hiddenModelIds]);
+  }, [globalModels, customModels, hiddenModelIds]);
 
   const availableModels = useMemo(() => {
     return allModels.filter(m => !m.hidden);
@@ -390,7 +545,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setGlobalApiKey,
       loadingMessages,
       setLoadingMessages,
-      refreshImages
+      refreshImages,
+      tasks,
+      setTasks,
+      activeTaskId,
+      setActiveTaskId,
+      isLoadingTasks,
+      deleteTask
     }}>
       {children}
     </AppContext.Provider>

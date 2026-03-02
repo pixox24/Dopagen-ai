@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../supabase';
 import { authenticate } from '../middleware/auth';
+import { getApiKey } from '../settings';
 
 const router = Router();
 
 // BizyAir API 端点从环境变量读取，不硬编码
 const BIZYAIR_API_URL = process.env.BIZYAIR_API_URL || 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
-const SERVER_API_KEY = process.env.BIZYAIR_API_KEY || '';
 
 // 并发控制：限制同时处理的任务数量，防止资源耗尽
 const MAX_CONCURRENT_TASKS = 10;
@@ -184,7 +184,7 @@ async function processTask(taskId: string): Promise<void> {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${SERVER_API_KEY}`
+                'Authorization': `Bearer ${getApiKey()}`
             },
             body: JSON.stringify(payload)
         });

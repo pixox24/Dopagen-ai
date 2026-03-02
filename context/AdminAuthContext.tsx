@@ -1,79 +1,80 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { adminApi, setAdminToken, clearAdminToken } from '../services/adminApi';
 
+// ============================================
 // 管理员认证上下文
-// 独立于普通用户的 AuthContext，为 Admin 后台提供单独的登录鉴权
+// 通过后端 JWT 验证，不再在前端存储凭据
+// ============================================
 
 interface AdminAuthContextType {
     isAdminAuthenticated: boolean;
     adminUsername: string | null;
-    adminLogin: (username: string, password: string) => { success: boolean; error?: string };
+    isLoading: boolean;
+    adminLogin: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
     adminLogout: () => void;
 }
 
 const AdminAuthContext = createContext<AdminAuthContextType>({
     isAdminAuthenticated: false,
     adminUsername: null,
-    adminLogin: () => ({ success: false }),
+    isLoading: true,
+    adminLogin: async () => ({ success: false }),
     adminLogout: () => { },
 });
 
-// 管理员凭据（临时硬编码，后续可迁移至数据库或环境变量）
-const ADMIN_CREDENTIALS = [
-    { username: 'fever8', password: '312151' },
-];
-
-const ADMIN_SESSION_KEY = 'dopagen_admin_session';
+const ADMIN_TOKEN_KEY = 'dopagen_admin_token';
+const ADMIN_USER_KEY = 'dopagen_admin_user';
 
 export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
     const [adminUsername, setAdminUsername] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
 
-    // 初始化时检查本地会话
+    // 启动时验证已存储的 token
     useEffect(() => {
-        try {
-            const stored = sessionStorage.getItem(ADMIN_SESSION_KEY);
-            if (stored) {
-                const session = JSON.parse(stored);
-                // 验证会话有效期（8小时）
-                if (session.username && session.timestamp && Date.now() - session.timestamp < 8 * 60 * 60 * 1000) {
-                    setIsAdminAuthenticated(true);
-                    setAdminUsername(session.username);
-                } else {
-                    sessionStorage.removeItem(ADMIN_SESSION_KEY);
-                }
+        const verify = async () => {
+            const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+            if (!token) {
+                setIsLoading(false);
+                return;
             }
-        } catch {
-            sessionStorage.removeItem(ADMIN_SESSION_KEY);
-        }
+            try {
+                const result = await adminApi.verify();
+                setIsAdminAuthenticated(true);
+                setAdminUsername(result.username);
+            } catch {
+                // Token 无效或过期，清除
+                localStorage.removeItem(ADMIN_TOKEN_KEY);
+                localStorage.removeItem(ADMIN_USER_KEY);
+            }
+            setIsLoading(false);
+        };
+        verify();
     }, []);
 
-    const adminLogin = (username: string, password: string): { success: boolean; error?: string } => {
-        const matched = ADMIN_CREDENTIALS.find(
-            (cred) => cred.username === username && cred.password === password
-        );
-
-        if (matched) {
+    const adminLogin = async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
+        try {
+            const result = await adminApi.login(username, password);
+            setAdminToken(result.token);
+            localStorage.setItem(ADMIN_USER_KEY, result.username);
             setIsAdminAuthenticated(true);
-            setAdminUsername(matched.username);
-            // 存入 sessionStorage（关闭浏览器自动失效）
-            sessionStorage.setItem(
-                ADMIN_SESSION_KEY,
-                JSON.stringify({ username: matched.username, timestamp: Date.now() })
-            );
+            setAdminUsername(result.username);
             return { success: true };
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : 'Login failed';
+            return { success: false, error: message };
         }
-
-        return { success: false, error: 'Invalid admin credentials' };
     };
 
     const adminLogout = () => {
+        clearAdminToken();
+        localStorage.removeItem(ADMIN_USER_KEY);
         setIsAdminAuthenticated(false);
         setAdminUsername(null);
-        sessionStorage.removeItem(ADMIN_SESSION_KEY);
     };
 
     return (
-        <AdminAuthContext.Provider value={{ isAdminAuthenticated, adminUsername, adminLogin, adminLogout }}>
+        <AdminAuthContext.Provider value={{ isAdminAuthenticated, adminUsername, isLoading, adminLogin, adminLogout }}>
             {children}
         </AdminAuthContext.Provider>
     );

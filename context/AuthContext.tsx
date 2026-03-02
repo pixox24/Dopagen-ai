@@ -81,6 +81,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (isMountedRef.current) setUser(profile);
         }
       } catch (err: unknown) {
+        // 忽略开发模式下 React StrictMode 导致的请求中止报错
+        if (err instanceof Error && err.name === 'AbortError') return;
         console.error('[Auth] Init error:', err);
       } finally {
         if (isMountedRef.current) {

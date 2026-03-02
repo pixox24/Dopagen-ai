@@ -11,19 +11,21 @@ const AdminLoginGate: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsSubmitting(true);
 
-    // 模拟短暂延迟以增加真实感
-    setTimeout(() => {
-      const result = adminLogin(username, password);
+    try {
+      const result = await adminLogin(username, password);
       if (!result.success) {
         setError(result.error || 'Access denied');
       }
+    } catch {
+      setError('Network error. Is the backend running?');
+    } finally {
       setIsSubmitting(false);
-    }, 400);
+    }
   };
 
   return (
@@ -101,8 +103,17 @@ const AdminLoginGate: React.FC = () => {
 
 // ========== Admin 主布局 ==========
 const AdminLayout: React.FC = () => {
-  const { isAdminAuthenticated, adminUsername, adminLogout } = useAdminAuth();
+  const { isAdminAuthenticated, adminUsername, adminLogout, isLoading } = useAdminAuth();
   const navigate = useNavigate();
+
+  // 验证 token 期间显示加载状态
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-carbon-muted text-sm animate-pulse">Verifying admin session...</div>
+      </div>
+    );
+  }
 
   // 未通过管理员认证 → 显示管理员独立登录页
   if (!isAdminAuthenticated) {

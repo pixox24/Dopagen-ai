@@ -12,7 +12,9 @@ import authRoutes from './routes/auth';
 import imageRoutes from './routes/images';
 import taskRoutes from './routes/tasks';
 import modelRoutes from './routes/models';
-import { isSupabaseConfigured } from './supabase';
+import adminRoutes from './routes/admin';
+import { isSupabaseConfigured, supabase } from './supabase';
+import { getSettings, getLoadingMessages } from './settings';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -73,6 +75,31 @@ app.use('/api/auth', authRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/models', modelRoutes);
+app.use('/api/admin', adminRoutes);
+
+// ============================================
+// Public API（无需认证，供前端获取管理员配置的数据）
+// ============================================
+
+/** 获取全局可用模型（管理员上传的 + 未隐藏的） */
+app.get('/api/public/models', async (_req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('custom_models')
+            .select('*')
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false });
+        if (error) { res.json([]); return; }
+        res.json(data || []);
+    } catch {
+        res.json([]);
+    }
+});
+
+/** 获取前端加载消息（管理员可在后台自定义） */
+app.get('/api/public/settings', (_req, res) => {
+    res.json({ loadingMessages: getLoadingMessages() });
+});
 
 // ============================================
 // Health Check
@@ -109,5 +136,5 @@ app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`\n⚡️ [Server]: Running at http://localhost:${PORT}`);
     console.log(`   [Network]: Access via http://<YOUR_IP>:${PORT}`);
     console.log(`   [Database]: ${isSupabaseConfigured() ? 'Supabase Connected' : 'Not Configured'}`);
-    console.log(`   [Routes]: /api/auth, /api/images, /api/tasks, /api/models`);
+    console.log(`   [Routes]: /api/auth, /api/images, /api/tasks, /api/models, /api/admin`);
 });

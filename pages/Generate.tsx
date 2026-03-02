@@ -173,29 +173,12 @@ const Generate: React.FC = () => {
     const [activeBatchIndex, setActiveBatchIndex] = useState<number | null>(null);
 
     // 使用提取出的自定义 Hook 管理任务轮询（N-02: 拆分上帝组件）
-    const handleTaskCompleted = useCallback((task: GenerationTask, resultUrl: string, duration: number) => {
-        addUserImage({
-            id: 'img_' + Date.now(),
-            url: resultUrl,
-            images: [resultUrl],
-            prompt: task.prompt,
-            width: task.width,
-            height: task.height,
-            createdAt: Date.now(),
-            isPublic: false,
-            userId: user?.id || 'anon',
-            model: task.modelName,
-            modelId: task.modelId,
-            duration
-        });
-    }, [addUserImage, user]);
-
     const {
         tasks, setTasks,
         activeTaskId, setActiveTaskId,
         activeTask, isLoading,
         deleteTask: deleteTaskFromPolling
-    } = useTaskPolling({ onTaskCompleted: handleTaskCompleted });
+    } = useTaskPolling();
 
 
 
@@ -324,7 +307,7 @@ const Generate: React.FC = () => {
         if (mainPromptInput) finalFormState[mainPromptInput.key] = promptVal;
 
         // 1. 立即创建待处理任务并添加到 state，让加载动画立即显示
-        const pendingTaskId = 'pending_' + Date.now();
+        const pendingTaskId = 'pending_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
         const now = Date.now();
         const pendingTask: GenerationTask = {
             id: pendingTaskId,
@@ -402,6 +385,9 @@ const Generate: React.FC = () => {
             }
 
         } catch (err: unknown) {
+            // 忽略正常的请求中止
+            if (err instanceof Error && err.name === 'AbortError') return;
+
             const message = err instanceof Error ? err.message : 'Generation failed';
             console.error(message);
             // 失败时移除待处理任务

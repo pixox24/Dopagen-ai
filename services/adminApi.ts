@@ -258,9 +258,8 @@ export const publicApi = {
         const { data, error } = await supabase
             .from('site_settings')
             .select('value')
-            .eq('key', 'loadingMessages')
-            .single();
-        if (error || !data) return { loadingMessages: [] };
-        return { loadingMessages: data.value || [] };
+            .eq('key', 'loadingMessages');
+        if (error || !data || data.length === 0) return { loadingMessages: [] };
+        return { loadingMessages: data[0].value || [] };
     },
 };

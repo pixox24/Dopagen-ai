@@ -114,10 +114,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const { data, error } = await supabase
         .from('images')
-        .select(`
-          *,
-          profiles(username, avatar_url)
-        `)
+        .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -133,10 +130,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           userId: img.user_id,
           model: img.model_name,
           params: img.params,
-          user: img.profiles ? {
-            username: img.profiles.username,
-            avatar: img.profiles.avatar_url
-          } : undefined
         })));
       }
     } catch (err: unknown) {
@@ -148,7 +141,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const { data, error } = await supabase
         .from('images')
-        .select(`*, profiles(username, avatar_url)`)
+        .select('*')
         .eq('is_public', true)
         .order('created_at', { ascending: false })
         .limit(30);
@@ -165,10 +158,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           userId: img.user_id,
           model: img.model_name,
           params: img.params,
-          user: img.profiles ? {
-            username: img.profiles.username,
-            avatar: img.profiles.avatar_url
-          } : undefined
         })));
       }
     } catch (err: unknown) {

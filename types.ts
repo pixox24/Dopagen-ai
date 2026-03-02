@@ -1,10 +1,6 @@
 
-export interface User {
-  id: string;
-  username: string;
-  email: string;
-  avatar: string;
-}
+// User 类型统一定义在 context/AuthContext.tsx 中，此处不再重复
+// 如需引用请使用：import { User } from './context/AuthContext';
 
 export interface GeneratedImage {
   id: string;
@@ -20,7 +16,14 @@ export interface GeneratedImage {
   modelId?: string;   // Model ID for Recreate
 
   // New fields for Recreate & Display
-  params?: any;        // The JSON params used to generate
+  // 生成参数的结构化类型
+  params?: {
+    web_app_id?: number;
+    input_values?: Record<string, string | number | boolean>;
+    aspect_ratio?: string;
+    quality?: string;
+    [key: string]: unknown;
+  };
   duration?: number;   // Generation duration in seconds
   user?: {             // Joined user profile
     username: string;
@@ -49,7 +52,7 @@ export interface GenerationTask {
 export interface BizyAirRequest {
   web_app_id: number;
   suppress_preview_output: boolean;
-  input_values: Record<string, any>;
+  input_values: Record<string, string | number | boolean>;
 }
 
 // --- NEW SCHEMA DEFINITIONS ---
@@ -125,20 +128,20 @@ export interface Model {
   // Legacy/Alternative fields
   web_app_id?: number;
   input_map?: ModelInputMap;
-  
+
   // Default parameters for dynamic resolution
   defaultParams?: {
     aspect_ratio?: string;
     quality?: string;
     width?: number;
     height?: number;
-    input_values?: Record<string, any>;
+    input_values?: Record<string, string | number | boolean>;
   };
 }
 
 export interface GenerateOptions {
   model: Model;
-  formState: Record<string, any>; // Key-Value map of user inputs
+  formState: Record<string, string | number | boolean | null>; // 用户输入的键值对映射
   globalWidth: number;
   globalHeight: number;
   globalAspectRatio: string;

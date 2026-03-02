@@ -33,14 +33,23 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
         navigator.clipboard.writeText(image.prompt);
     };
 
-    const handleDownload = () => {
-        const link = document.createElement('a');
-        link.href = image.url;
-        link.download = `dopa-gen-${image.id}.jpg`;
-        link.target = "_blank";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    // 下载图片到本地（fetch blob 方式，确保跨域图片也能下载）
+    const handleDownload = async () => {
+        try {
+            const res = await fetch(image.url);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `dopagen-${image.id}-${Date.now()}.png`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } catch {
+            // 兜底：直接新窗口打开
+            window.open(image.url, '_blank');
+        }
     };
 
     // Use joined user data or fallback

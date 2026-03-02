@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
@@ -21,27 +21,38 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 // ============================================
 
-// 1. Manually handle Preflight/OPTIONS to ensure PNA header is sent.
-// The 'cors' package sometimes doesn't play nice with PNA headers on preflight.
+// 从环境变量读取允许的来源列表，严格限制跨域访问
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+    .split(',').map(s => s.trim());
+
+// 1. 手动处理 Preflight/OPTIONS，确保 PNA 头部正确发送
 app.options('*', (req, res) => {
-    const origin = req.headers.origin || '*';
-    res.header('Access-Control-Allow-Origin', origin);
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
     res.header('Access-Control-Allow-Credentials', 'true');
-    // Critical for Private Network Access (Public IP -> Localhost)
+    // 私有网络访问（Public IP -> Localhost）
     res.header('Access-Control-Allow-Private-Network', 'true');
     res.sendStatus(204);
 });
 
-// 2. Standard CORS for other requests
+// 2. 标准 CORS 配置：仅允许白名单来源
 app.use(cors({
     origin: function (origin, callback) {
-        if (!origin) return callback(null, true);
-        return callback(null, true);
+        // 无来源请求（如服务器间调用）仅在开发环境放行
+        if (!origin) {
+            return callback(null, process.env.NODE_ENV === 'development');
+        }
+        if (ALLOWED_ORIGINS.includes(origin)) {
+            return callback(null, true);
+        }
+        callback(new Error(`CORS 策略拒绝来源: ${origin}`));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
 
@@ -51,7 +62,8 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(express.json({ limit: '50mb' }));
+// 限制 JSON 请求体大小，防止内存耗尽攻击（图片上传应使用 multipart/form-data）
+app.use(express.json({ limit: '5mb' }));
 app.use(morgan('dev'));
 
 // ============================================
@@ -83,9 +95,11 @@ app.use((_req: Request, res: Response) => {
 // ============================================
 // Global Error Handler
 // ============================================
-app.use((err: Error, _req: Request, res: Response, _next: any) => {
-    console.error('[Server Error]', err);
-    res.status(500).json({ error: 'Internal server error' });
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('[Server Error]', err.message, err.stack);
+    // 不向客户端暴露内部错误详情
+    const statusCode = res.statusCode !== 200 ? res.statusCode : 500;
+    res.status(statusCode).json({ error: 'Internal server error' });
 });
 
 // ============================================

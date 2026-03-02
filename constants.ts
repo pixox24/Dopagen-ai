@@ -1,42 +1,41 @@
 import { Model } from './types';
 
-// NOTE: In a real production app, this key should be hidden behind a backend proxy.
-export const BIZYAIR_API_KEY = 'sk-wxgquflwltzsufpzmycmbykrzitvxgfuxtzbvglveffiizff';
-export const BIZYAIR_API_URL = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
+// API Key 必须且仅存在于后端 .env 中，前端不应接触任何密钥
+// 所有对 BizyAir 的调用通过后端代理或 Supabase Edge Function 进行
 
 // Standardized Models with explicit UI Schemas
 export const MODELS: Model[] = [
-  { 
-    id: 'z-image-turbo', 
-    name: 'Z-Image Turbo', 
-    version: '2.1', 
+  {
+    id: 'z-image-turbo',
+    name: 'Z-Image Turbo',
+    version: '2.1',
     description: 'High-speed standard generation',
     schema: {
-        model_id: 46445,
-        inputs: [
-            { key: "6:CLIPTextEncode.text", label: "Prompt", type: "textarea", required: true },
-            { key: "13:EmptySD3LatentImage.width", label: "Width", type: "hidden", mapping: "width" },
-            { key: "13:EmptySD3LatentImage.height", label: "Height", type: "hidden", mapping: "height" },
-            { key: "13:EmptySD3LatentImage.batch_size", label: "Batch Size", type: "select", options: ["1", "2", "3", "4"], defaultValue: 1 },
-            { key: "3:KSampler.seed", label: "Seed", type: "hidden", generate: "random_int" }
-        ]
+      model_id: 46445,
+      inputs: [
+        { key: "6:CLIPTextEncode.text", label: "Prompt", type: "textarea", required: true },
+        { key: "13:EmptySD3LatentImage.width", label: "Width", type: "hidden", mapping: "width" },
+        { key: "13:EmptySD3LatentImage.height", label: "Height", type: "hidden", mapping: "height" },
+        { key: "13:EmptySD3LatentImage.batch_size", label: "Batch Size", type: "select", options: ["1", "2", "3", "4"], defaultValue: 1 },
+        { key: "3:KSampler.seed", label: "Seed", type: "hidden", generate: "random_int" }
+      ]
     }
   },
-  { 
-    id: 'qwen-edit-2512', 
-    name: 'QwenEdit 2.5', 
-    version: '2.5', 
+  {
+    id: 'qwen-edit-2512',
+    name: 'QwenEdit 2.5',
+    version: '2.5',
     description: 'AI Image Editing & Inpainting',
     schema: {
-        model_id: 43061,
-        inputs: [
-            { key: "41:LoadImage.image", label: "Input Image", type: "image", required: true },
-            { key: "117:Text Multiline.text", label: "Prompt", type: "textarea", required: true },
-            { key: "118:Text Multiline.text", label: "Negative Prompt", type: "textarea" },
-            { key: "119:PrimitiveInt.value", label: "Width", type: "hidden", mapping: "width" },
-            { key: "120:PrimitiveInt.value", label: "Height", type: "hidden", mapping: "height" },
-            { key: "65:KSampler.seed", label: "Seed", type: "hidden", generate: "random_int" }
-        ]
+      model_id: 43061,
+      inputs: [
+        { key: "41:LoadImage.image", label: "Input Image", type: "image", required: true },
+        { key: "117:Text Multiline.text", label: "Prompt", type: "textarea", required: true },
+        { key: "118:Text Multiline.text", label: "Negative Prompt", type: "textarea" },
+        { key: "119:PrimitiveInt.value", label: "Width", type: "hidden", mapping: "width" },
+        { key: "120:PrimitiveInt.value", label: "Height", type: "hidden", mapping: "height" },
+        { key: "65:KSampler.seed", label: "Seed", type: "hidden", generate: "random_int" }
+      ]
     }
   }
 ];

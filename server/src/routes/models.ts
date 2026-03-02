@@ -22,7 +22,7 @@ router.get('/custom', authenticate, async (req: Request, res: Response) => {
         }
 
         res.json(data || []);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch custom models' });
     }
 });
@@ -51,6 +51,8 @@ router.post('/custom', authenticate, async (req: Request, res: Response) => {
                 schema: schema || null,
                 input_map: input_map || null,
                 thumbnail_url: thumbnail_url || null,
+                // TODO: api_key 应加密后存储，当前为明文——存在数据库泄漏风险
+                // 建议使用 AES-256 加密或转为使用后端密钥管理系统
                 api_key: api_key || null,
                 is_hidden: false
             })
@@ -63,7 +65,7 @@ router.post('/custom', authenticate, async (req: Request, res: Response) => {
         }
 
         res.status(201).json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to create model' });
     }
 });
@@ -112,7 +114,7 @@ router.patch('/custom/:id', authenticate, async (req: Request, res: Response) =>
         }
 
         res.json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to update model' });
     }
 });
@@ -137,7 +139,7 @@ router.delete('/custom/:id', authenticate, async (req: Request, res: Response) =
         }
 
         res.json({ message: 'Model deleted' });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to delete model' });
     }
 });
@@ -174,7 +176,7 @@ router.patch('/custom/:id/toggle-visibility', authenticate, async (req: Request,
         }
 
         res.json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to toggle model visibility' });
     }
 });

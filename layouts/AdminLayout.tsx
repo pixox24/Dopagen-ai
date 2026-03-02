@@ -1,47 +1,143 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAdminAuth } from '../context/AdminAuthContext';
+import Button from '../components/Button';
 
+// ========== 管理员登录门禁页面 ==========
+const AdminLoginGate: React.FC = () => {
+  const { adminLogin } = useAdminAuth();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+
+    // 模拟短暂延迟以增加真实感
+    setTimeout(() => {
+      const result = adminLogin(username, password);
+      if (!result.success) {
+        setError(result.error || 'Access denied');
+      }
+      setIsSubmitting(false);
+    }, 400);
+  };
+
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="w-full max-w-[380px] relative">
+        {/* 安全标志 */}
+        <div className="text-center mb-8">
+          <div className="w-14 h-14 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <svg className="w-7 h-7 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-bold text-white tracking-tight mb-1">Admin Console</h1>
+          <p className="text-carbon-muted text-xs">Restricted area. Authorized personnel only.</p>
+        </div>
+
+        {/* 登录表单 */}
+        <form onSubmit={handleSubmit} className="bg-[#0a0a0a] border border-carbon-border rounded-2xl p-6 space-y-5">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold uppercase text-carbon-muted tracking-widest ml-1">Admin ID</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl bg-carbon-surface border border-carbon-border text-white text-sm focus:border-red-500/40 focus:ring-1 focus:ring-red-500/20 transition-all outline-none"
+              placeholder="Enter admin username"
+              required
+              autoFocus
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold uppercase text-carbon-muted tracking-widest ml-1">Access Key</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl bg-carbon-surface border border-carbon-border text-white text-sm focus:border-red-500/40 focus:ring-1 focus:ring-red-500/20 transition-all outline-none"
+              placeholder="••••••••"
+              required
+              disabled={isSubmitting}
+            />
+          </div>
+
+          {/* 错误提示 */}
+          <div className={`transition-all duration-200 overflow-hidden ${error ? 'max-h-16 opacity-100' : 'max-h-0 opacity-0'}`}>
+            <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-lg flex items-center gap-2">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+              <span>{error}</span>
+            </div>
+          </div>
+
+          <Button
+            type="submit"
+            variant="primary"
+            className="w-full py-3 text-sm font-bold rounded-xl bg-red-600 hover:bg-red-500 text-white border-none shadow-[0_0_20px_rgba(239,68,68,0.15)] hover:shadow-[0_0_30px_rgba(239,68,68,0.25)] transition-all"
+            isLoading={isSubmitting}
+            disabled={isSubmitting}
+          >
+            Authenticate
+          </Button>
+        </form>
+
+        {/* 底部提示 */}
+        <p className="text-center text-[11px] text-carbon-muted/40 mt-6">
+          Session expires after 8 hours or when browser closes.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// ========== Admin 主布局 ==========
 const AdminLayout: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { isAdminAuthenticated, adminUsername, adminLogout } = useAdminAuth();
   const navigate = useNavigate();
 
-  if (!user) {
-    // Basic protection, though pages handle it too
-    return <div className="p-10 text-center text-white">Redirecting...</div>;
+  // 未通过管理员认证 → 显示管理员独立登录页
+  if (!isAdminAuthenticated) {
+    return <AdminLoginGate />;
   }
 
   const handleLogout = () => {
-    logout();
-    navigate('/login');
+    adminLogout();
   };
 
   const navItemClass = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-all duration-200 ${
-      isActive
-        ? 'bg-carbon-accent text-carbon-base shadow-lg shadow-white/10'
-        : 'text-carbon-muted hover:text-white hover:bg-white/5'
+    `flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-all duration-200 ${isActive
+      ? 'bg-carbon-accent text-carbon-base shadow-lg shadow-white/10'
+      : 'text-carbon-muted hover:text-white hover:bg-white/5'
     }`;
 
   return (
     <div className="flex h-screen bg-black overflow-hidden font-sans">
-      
+
       {/* Sidebar */}
       <aside className="w-64 bg-[#050505] border-r border-carbon-border flex flex-col hidden md:flex">
         {/* Brand */}
         <div className="h-16 flex items-center px-6 border-b border-carbon-border/50">
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate('/')}>
-                  <div className="w-5 h-5 bg-white rounded-sm flex items-center justify-center">
-                    <div className="w-2 h-2 bg-black rounded-full"></div>
-                  </div>
-                  <span className="font-bold text-lg tracking-tight text-white">DopaGen <span className="text-[10px] text-carbon-muted font-normal uppercase ml-1">Admin</span></span>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate('/')}>
+            <div className="w-5 h-5 bg-white rounded-sm flex items-center justify-center">
+              <div className="w-2 h-2 bg-black rounded-full"></div>
             </div>
+            <span className="font-bold text-lg tracking-tight text-white">DopaGen <span className="text-[10px] text-red-400 font-normal uppercase ml-1">Admin</span></span>
+          </div>
         </div>
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-6 px-3 space-y-1">
           <p className="px-4 text-[10px] font-bold text-carbon-muted uppercase tracking-wider mb-2 mt-2">Overview</p>
-          
+
           <NavLink to="/admin/dashboard" className={navItemClass}>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
             Dashboard
@@ -84,19 +180,21 @@ const AdminLayout: React.FC = () => {
 
         {/* User Footer */}
         <div className="p-4 border-t border-carbon-border bg-[#0a0a0a]">
-             <div className="flex items-center gap-3 mb-3">
-                 <img src={user.avatar} className="w-8 h-8 rounded-full border border-carbon-border" />
-                 <div className="overflow-hidden">
-                     <p className="text-sm font-medium text-white truncate">{user.username}</p>
-                     <p className="text-[10px] text-carbon-muted truncate">Admin Access</p>
-                 </div>
-             </div>
-             <button 
-                onClick={handleLogout}
-                className="w-full py-1.5 text-xs text-red-400 hover:bg-red-500/10 rounded border border-transparent hover:border-red-500/20 transition-all"
-            >
-                Log Out
-             </button>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 text-xs font-bold">
+              {adminUsername?.charAt(0).toUpperCase()}
+            </div>
+            <div className="overflow-hidden">
+              <p className="text-sm font-medium text-white truncate">{adminUsername}</p>
+              <p className="text-[10px] text-red-400 truncate">Admin Access</p>
+            </div>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="w-full py-1.5 text-xs text-red-400 hover:bg-red-500/10 rounded border border-transparent hover:border-red-500/20 transition-all"
+          >
+            Log Out Admin
+          </button>
         </div>
       </aside>
 
@@ -104,12 +202,15 @@ const AdminLayout: React.FC = () => {
       <main className="flex-1 overflow-auto bg-black relative">
         {/* Mobile Header */}
         <div className="md:hidden h-14 border-b border-carbon-border flex items-center justify-between px-4 bg-[#050505]">
-            <span className="font-bold text-white">DopaGen Admin</span>
-            <button onClick={() => navigate('/')} className="text-xs text-carbon-muted">Exit</button>
+          <span className="font-bold text-white">DopaGen <span className="text-red-400 text-xs">Admin</span></span>
+          <div className="flex gap-2">
+            <button onClick={() => navigate('/')} className="text-xs text-carbon-muted hover:text-white transition-colors">Exit</button>
+            <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 transition-colors">Logout</button>
+          </div>
         </div>
 
         <div className="p-6 md:p-10 max-w-7xl mx-auto min-h-full">
-            <Outlet />
+          <Outlet />
         </div>
       </main>
     </div>

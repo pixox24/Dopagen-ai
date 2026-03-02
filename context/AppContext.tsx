@@ -48,8 +48,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [customModels, setCustomModels] = useState<Model[]>([]);
   const [hiddenModelIds, setHiddenModelIds] = useState<string[]>([]);
 
+  // API Key 使用 sessionStorage 替代 localStorage，减少 XSS 窃取风险
+  // sessionStorage 在标签页关闭时自动清除
   const [globalApiKey, setGlobalApiKeyState] = useState<string>(() => {
-    return localStorage.getItem('dopa_global_api_key') || '';
+    return sessionStorage.getItem('dopa_global_api_key') || '';
   });
 
   const [loadingMessages, setLoadingMessagesState] = useState<string[]>(() => {
@@ -95,7 +97,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } : undefined
         })));
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to fetch user images:', err);
     }
   }, [user, session]);
@@ -127,7 +129,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } : undefined
         })));
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to fetch public images:', err);
     }
   }, []);
@@ -157,7 +159,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })));
         setHiddenModelIds(data.filter(m => m.is_hidden).map(m => m.id));
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to fetch custom models:', err);
     }
   }, [user, session]);
@@ -188,14 +190,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 数据操作方法
   // ============================================
 
-  // 保留 localStorage 用于不需要持久化到云端的设置
+  // loading messages 持久化到 localStorage（非敏感数据）
   useEffect(() => {
     localStorage.setItem('dopa_loading_messages', JSON.stringify(loadingMessages));
   }, [loadingMessages]);
 
   const setGlobalApiKey = (key: string) => {
     setGlobalApiKeyState(key);
-    localStorage.setItem('dopa_global_api_key', key);
+    // 使用 sessionStorage 存储 API Key，比 localStorage 更安全
+    // sessionStorage 仅在当前标签页可用，关闭后自动清除
+    sessionStorage.setItem('dopa_global_api_key', key);
   };
 
   const setLoadingMessages = (msgs: string[]) => {
@@ -212,6 +216,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteUserImage = async (id: string) => {
+    // 保留旧数据用于回滚
+    const previousUserImages = userImages;
+    const previousPublicImages = publicImages;
+
     // 乐观更新
     setUserImages(prev => prev.filter(img => img.id !== id));
     setPublicImages(prev => prev.filter(img => img.id !== id));
@@ -221,8 +229,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { error } = await supabase.from('images').delete().eq('id', id);
       if (error) {
         console.error('Failed to delete image:', error);
-        // 失败时刷新以回滚
-        await fetchUserImages();
+        // 失败时回滚到之前的状态
+        setUserImages(previousUserImages);
+        setPublicImages(previousPublicImages);
       }
     }
   };
@@ -230,14 +239,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const publishImage = async (id: string) => {
     const img = userImages.find(i => i.id === id);
     if (img && !img.isPublic) {
+      // 保留旧数据用于回滚
+      const previousUserImages = userImages;
+      const previousPublicImages = publicImages;
+
       // 乐观更新
       const updatedImg = { ...img, isPublic: true };
       setUserImages(prev => prev.map(i => i.id === id ? updatedImg : i));
       setPublicImages(prev => [updatedImg, ...prev]);
 
-      // 同步到 Supabase
+      // 同步到 Supabase，失败时回滚
       if (session) {
-        await supabase.from('images').update({ is_public: true }).eq('id', id);
+        const { error } = await supabase.from('images').update({ is_public: true }).eq('id', id);
+        if (error) {
+          console.error('Failed to publish image:', error);
+          setUserImages(previousUserImages);
+          setPublicImages(previousPublicImages);
+        }
       }
     }
   };
@@ -264,7 +282,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .select()
         .single();
 
-      if (!error && data) {
+      if (error) {
+        // 失败时回滚
+        console.error('Failed to add custom model:', error);
+        setCustomModels(prev => prev.filter(m => m.id !== model.id));
+      } else if (data) {
         // 用服务端生成的 ID 替换本地 ID
         setCustomModels(prev => prev.map(m =>
           m.id === model.id ? { ...m, id: data.id } : m
@@ -274,42 +296,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCustomModel = async (id: string, updates: Partial<Model>) => {
+    // 保留旧数据用于回滚
+    const previousModels = customModels;
     setCustomModels(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
 
     if (session) {
-      const dbUpdates: Record<string, any> = {};
+      const dbUpdates: Record<string, string | boolean | number | null | undefined> = {};
       if (updates.name !== undefined) dbUpdates.name = updates.name;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
-      if (updates.schema !== undefined) dbUpdates.schema = updates.schema;
-      if (updates.input_map !== undefined) dbUpdates.input_map = updates.input_map;
+      if (updates.schema !== undefined) dbUpdates.schema = updates.schema as unknown as string;
+      if (updates.input_map !== undefined) dbUpdates.input_map = updates.input_map as unknown as string;
       if (updates.thumbnail !== undefined) dbUpdates.thumbnail_url = updates.thumbnail;
       dbUpdates.updated_at = new Date().toISOString();
 
-      await supabase.from('custom_models').update(dbUpdates).eq('id', id);
+      const { error } = await supabase.from('custom_models').update(dbUpdates).eq('id', id);
+      if (error) {
+        console.error('Failed to update custom model:', error);
+        setCustomModels(previousModels);
+      }
     }
   };
 
   const deleteCustomModel = async (id: string) => {
+    // 保留旧数据用于回滚
+    const previousModels = customModels;
+    const previousHidden = hiddenModelIds;
+
     setCustomModels(prev => prev.filter(m => m.id !== id));
     setHiddenModelIds(prev => prev.filter(hid => hid !== id));
 
     if (session) {
-      await supabase.from('custom_models').delete().eq('id', id);
+      const { error } = await supabase.from('custom_models').delete().eq('id', id);
+      if (error) {
+        console.error('Failed to delete custom model:', error);
+        setCustomModels(previousModels);
+        setHiddenModelIds(previousHidden);
+      }
     }
   };
 
   const toggleModelVisibility = async (id: string) => {
     const isCurrentlyHidden = hiddenModelIds.includes(id);
+    const previousHidden = hiddenModelIds;
 
     setHiddenModelIds(prev =>
       isCurrentlyHidden ? prev.filter(hid => hid !== id) : [...prev, id]
     );
 
     if (session) {
-      await supabase
+      const { error } = await supabase
         .from('custom_models')
         .update({ is_hidden: !isCurrentlyHidden })
         .eq('id', id);
+      if (error) {
+        console.error('Failed to toggle model visibility:', error);
+        setHiddenModelIds(previousHidden);
+      }
     }
   };
 

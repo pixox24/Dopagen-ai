@@ -2,7 +2,6 @@ import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Generate from './pages/Generate';
-import Explore from './pages/Explore';
 import Profile from './pages/Profile';
 import Login from './pages/Login';
 
@@ -16,6 +15,7 @@ const Placeholder = React.lazy(() => import('./pages/admin/Placeholder'));
 
 import { AuthProvider } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
+import { AdminAuthProvider } from './context/AdminAuthContext';
 
 const App: React.FC = () => {
   return (
@@ -24,23 +24,22 @@ const App: React.FC = () => {
         <HashRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
-            
+
             {/* Main App Layout */}
             <Route path="/" element={<Layout />}>
               <Route index element={<Generate />} />
-              <Route path="explore" element={<Explore />} />
               <Route path="profile" element={<Profile />} />
             </Route>
 
-            {/* Admin Layout - Lazy Loaded with Suspense */}
-            <Route path="/admin" element={<AdminLayout />}>
+            {/* Admin Layout - 独立认证，Lazy Loaded */}
+            <Route path="/admin" element={<AdminAuthProvider><AdminLayout /></AdminAuthProvider>}>
               <Route index element={<Navigate to="dashboard" replace />} />
               <Route path="dashboard" element={
                 <Suspense fallback={<div className="p-8 text-center">Loading Dashboard...</div>}>
                   <Dashboard />
                 </Suspense>
               } />
-              
+
               <Route path="models" element={
                 <Suspense fallback={<div className="p-8 text-center">Loading Models...</div>}>
                   <ModelList />
@@ -56,7 +55,7 @@ const App: React.FC = () => {
                   <Settings />
                 </Suspense>
               } />
-              
+
               {/* Placeholders */}
               <Route path="users" element={
                 <Suspense fallback={<div className="p-8 text-center">Loading...</div>}>
@@ -84,7 +83,7 @@ const App: React.FC = () => {
           </Routes>
         </HashRouter>
       </AppProvider>
-    </AuthProvider>
+    </AuthProvider >
   );
 };
 

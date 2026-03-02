@@ -24,9 +24,17 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServic
     }
 });
 
-// Initializing Supabase Auth client (optional, but good for token verification)
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || supabaseServiceKey;
-export const supabaseAuth: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+// 初始化 Supabase Auth 客户端（用于 Token 验证）
+// 严禁回退到 Service Key —— 这会导致灾难性的权限提升
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+if (!supabaseAnonKey && supabaseUrl) {
+    console.error('[致命错误] SUPABASE_ANON_KEY 未设置。绝不能将 Service Role Key 用作 Anon Key 的回退。');
+}
+export const supabaseAuth: SupabaseClient = createClient(
+    supabaseUrl,
+    supabaseAnonKey || '',
+    { auth: { autoRefreshToken: false, persistSession: false } }
+);
 
 export const isSupabaseConfigured = (): boolean => {
     return !!supabaseUrl && !!supabaseServiceKey;

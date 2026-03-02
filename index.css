@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #000000;
+    color: #EDEDED;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  /* Refined Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0A0A0A;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #262626;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #404040;
+  }
+  
+  /* Carbon Card System */
+  .carbon-card {
+    background: #111111;
+    border: 1px solid #262626;
+    border-radius: 12px;
+    transition: border-color 0.2s ease;
+  }
+  
+  .carbon-card:hover {
+    border-color: #404040;
+  }
+
+  .carbon-input {
+    background: #0A0A0A;
+    border: 1px solid #262626;
+    color: #EDEDED;
+    transition: all 0.2s ease;
+    outline: none;
+  }
+  
+  .carbon-input:focus {
+    border-color: #525252;
+    box-shadow: 0 0 0 1px #525252;
+  }
+
+  .masonry-grid {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 300px;
+  }
+  
+  .content-visibility-item {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 200px;
+  }
+
+  .text-gradient {
+    background: linear-gradient(to right, #ffffff, #888888);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}

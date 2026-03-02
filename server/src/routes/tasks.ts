@@ -4,9 +4,13 @@ import { authenticate } from '../middleware/auth';
 
 const router = Router();
 
-// Endpoint for BizyAir API (Make sure this matches the real documentation)
-const BIZYAIR_API_URL = 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
+// BizyAir API 端点从环境变量读取，不硬编码
+const BIZYAIR_API_URL = process.env.BIZYAIR_API_URL || 'https://api.bizyair.cn/w/v1/webapp/task/openapi/create';
 const SERVER_API_KEY = process.env.BIZYAIR_API_KEY || '';
+
+// 并发控制：限制同时处理的任务数量，防止资源耗尽
+const MAX_CONCURRENT_TASKS = 10;
+let activeTasks = 0;
 
 /**
  * POST /api/tasks
@@ -40,23 +44,29 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
         }
 
         console.log(`[Tasks] Task ${task.id} queued. Triggering worker...`);
-        // Async trigger
-        processTask(task.id).catch(err => console.error('[Worker] Trigger Error:', err));
+        // 并发检查：超出限制时任务保持 PENDING 状态等待后续处理
+        if (activeTasks >= MAX_CONCURRENT_TASKS) {
+            console.warn(`[Tasks] Concurrent limit reached (${MAX_CONCURRENT_TASKS}), task ${task.id} will wait.`);
+        } else {
+            // 异步触发任务处理
+            processTask(task.id).catch(err => console.error('[Worker] Trigger Error:', err));
+        }
 
         res.status(201).json({
             taskId: task.id,
             status: 'PENDING',
             message: 'Task queued'
         });
-    } catch (err) {
-        console.error('[Tasks] Create error:', err);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        console.error('[Tasks] Create error:', message);
         res.status(500).json({ error: 'Failed to create task' });
     }
 });
 
 router.get('/', authenticate, async (req: Request, res: Response) => {
     try {
-        const limit = parseInt(req.query.limit as string) || 20;
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
 
         const { data, error } = await supabase
             .from('generation_tasks')
@@ -71,7 +81,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
         }
 
         res.json(data || []);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch tasks' });
     }
 });
@@ -100,7 +110,7 @@ router.get('/:id', authenticate, async (req: Request, res: Response) => {
             progress: task.progress,
             createdAt: task.created_at
         });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch task status' });
     }
 });
@@ -121,7 +131,7 @@ router.delete('/:id', authenticate, async (req: Request, res: Response) => {
         }
 
         res.json({ message: 'Task deleted' });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to delete task' });
     }
 });
@@ -131,7 +141,8 @@ router.delete('/:id', authenticate, async (req: Request, res: Response) => {
 // ============================================
 
 async function processTask(taskId: string): Promise<void> {
-    console.log(`[Worker] Starting process for task ${taskId}`);
+    activeTasks++;
+    console.log(`[Worker] Starting process for task ${taskId} (active: ${activeTasks}/${MAX_CONCURRENT_TASKS})`);
 
     try {
         // 1. Fetch task details
@@ -184,7 +195,20 @@ async function processTask(taskId: string): Promise<void> {
             throw new Error(`BizyAir API Error (${response.status}): ${errorText.substring(0, 200)}`);
         }
 
-        const result: any = await response.json();
+        // BizyAir API 响应可能包含多种结构，使用宽松接口安全访问
+        interface BizyAirOutput {
+            data?: { images?: Array<string | { url: string }>; };
+            file_url?: string;
+            object_url?: string;
+            error_msg?: string;
+            error_type?: string;
+        }
+        interface BizyAirResponse {
+            status?: string;
+            outputs?: BizyAirOutput[];
+            data?: { file_url?: string; };
+        }
+        const result = (await response.json()) as BizyAirResponse;
         console.log(`[Worker] BizyAir response received.`);
 
         // CHECK FOR EXPLICIT FAILURE STATUS
@@ -252,16 +276,21 @@ async function processTask(taskId: string): Promise<void> {
         console.log(`[Worker] Task ${taskId} COMPLETED successfully.`);
         console.log(`[Worker] Result URL: ${imageUrl}`);
 
-    } catch (err: any) {
-        console.error(`[Worker] Task ${taskId} FAILED:`, err.message);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`[Worker] Task ${taskId} FAILED:`, message);
 
         await supabase
             .from('generation_tasks')
             .update({
                 status: 'FAILED',
-                error: err.message || 'Unknown error'
+                error: message
             })
             .eq('id', taskId);
+    } finally {
+        // 无论成功失败都要释放并发槽位
+        activeTasks = Math.max(0, activeTasks - 1);
+        console.log(`[Worker] Task ${taskId} finished. Active tasks: ${activeTasks}/${MAX_CONCURRENT_TASKS}`);
     }
 }
 

@@ -1,12 +1,6 @@
 import { GenerateOptions } from '../types';
 import { supabase } from '../lib/supabase';
 
-// Supabase Edge Function URL
-// In production: https://your-project.supabase.co/functions/v1/generate
-// In development: http://localhost:54321/functions/v1/generate
-const EDGE_FUNCTION_URL = import.meta.env.VITE_SUPABASE_EDGE_FUNCTION_URL || 
-  `${import.meta.env.VITE_SUPABASE_URL?.replace('/rest/v1', '')}/functions/v1`;
-
 export interface TaskResponse {
     id: string;
     status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
@@ -22,8 +16,7 @@ export interface SubmitTaskResponse {
 }
 
 /**
- * Submit image generation task to Supabase Edge Function
- * This replaces the old Express backend API call
+ * 向 Supabase Edge Function 提交图像生成任务
  */
 export const submitGenerationTask = async (options: GenerateOptions): Promise<SubmitTaskResponse> => {
     const { model, formState, globalWidth, globalHeight, globalAspectRatio, globalQuality } = options;
@@ -31,15 +24,15 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
 
     if (!schema) throw new Error("Model schema is missing.");
 
-    // Get current user
+    // 获取当前用户
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("User not authenticated");
 
-    // Build input values
-    const inputValues: Record<string, any> = {};
+    // 构建输入参数
+    const inputValues: Record<string, string | number | boolean> = {};
 
     schema.inputs.forEach(input => {
-        let valueToUse: any = undefined;
+        let valueToUse: string | number | boolean | undefined = undefined;
 
         if (input.generate === 'random_int') {
             valueToUse = Math.floor(Math.random() * 2147483647);
@@ -57,7 +50,7 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
             }
         }
 
-        // Limit seed to positive 32-bit int
+        // 限制 seed 为正 32 位整数范围
         if (input.key.toLowerCase().includes('seed') && typeof valueToUse === 'number') {
             if (valueToUse > 2147483647) valueToUse = Math.floor(Math.random() * 2147483647);
             if (valueToUse < 0) valueToUse = 0;
@@ -74,7 +67,7 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
     };
 
     try {
-        // Call Supabase Edge Function
+        // 调用 Supabase Edge Function
         const { data, error } = await supabase.functions.invoke('generate', {
             body: {
                 modelId: model.name || model.id,
@@ -98,15 +91,15 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
             imageUrl: data.imageUrl,
             status: data.status || 'PENDING'
         };
-    } catch (e: any) {
-        console.error("Submission Error:", e);
-        throw new Error(e.message || "Cannot connect to generation service.");
+    } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Cannot connect to generation service.';
+        console.error("Submission Error:", message);
+        throw new Error(message);
     }
 };
 
 /**
- * Get task status from Supabase database
- * Direct query instead of API call
+ * 从 Supabase 查询任务状态
  */
 export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
     try {
@@ -128,29 +121,34 @@ export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
             error: data.error,
             progress: data.progress
         };
-    } catch (e) {
+    } catch (e: unknown) {
         console.error("Polling Error:", e);
         return { id: taskId, status: 'PENDING' };
     }
 };
 
 /**
- * Generate image with polling
+ * 生成图像并轮询结果（带超时保护）
  */
 export const generateImage = async (options: GenerateOptions): Promise<string[]> => {
     const submitResponse = await submitGenerationTask(options);
     const { taskId, imageUrl } = submitResponse;
-    
+
     // 如果已经返回了 imageUrl，直接返回
     if (imageUrl) {
         return [imageUrl];
     }
-    
-    // 否则轮询等待结果
-    while (true) {
-        await new Promise(r => setTimeout(r, 2000));
+
+    // 轮询等待结果（带超时保护）
+    const MAX_POLL_ATTEMPTS = 60; // 最多轮询 60 次
+    const POLL_INTERVAL_MS = 2000; // 每 2 秒
+    let attempts = 0;
+
+    while (attempts < MAX_POLL_ATTEMPTS) {
+        attempts++;
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
         const task = await pollTaskStatus(taskId);
-        
+
         if (task.status === 'COMPLETED' && task.resultUrl) {
             return [task.resultUrl];
         }
@@ -158,18 +156,21 @@ export const generateImage = async (options: GenerateOptions): Promise<string[]>
             throw new Error(task.error || "Generation Failed");
         }
     }
+
+    throw new Error(`Generation timeout after ${MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
 };
 
 /**
- * Get user's generation tasks
- * Direct Supabase query
+ * 获取用户的生成任务列表
+ * 通过 RLS 自动过滤当前用户的数据
  */
-export const getUserTasks = async (limit: number = 20) => {
+export const getUserTasks = async (limit: number = 20): Promise<TaskResponse[]> => {
+    const safeLimit = Math.min(100, Math.max(1, limit));
     const { data, error } = await supabase
         .from('generation_tasks')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(limit);
+        .limit(safeLimit);
 
     if (error) {
         console.error("Get Tasks Error:", error);
@@ -180,10 +181,10 @@ export const getUserTasks = async (limit: number = 20) => {
 };
 
 /**
- * Delete a task
- * Direct Supabase query
+ * 删除任务
+ * RLS 应确保只能删除自己的任务
  */
-export const deleteTask = async (taskId: string) => {
+export const deleteTask = async (taskId: string): Promise<void> => {
     const { error } = await supabase
         .from('generation_tasks')
         .delete()
@@ -196,15 +197,15 @@ export const deleteTask = async (taskId: string) => {
 };
 
 /**
- * Get user's images
- * Direct Supabase query
+ * 获取用户的图片列表
  */
-export const getUserImages = async (limit: number = 50) => {
+export const getUserImages = async (limit: number = 50): Promise<GenerateOptions[]> => {
+    const safeLimit = Math.min(100, Math.max(1, limit));
     const { data, error } = await supabase
         .from('images')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(limit);
+        .limit(safeLimit);
 
     if (error) {
         console.error("Get Images Error:", error);
@@ -215,10 +216,10 @@ export const getUserImages = async (limit: number = 50) => {
 };
 
 /**
- * Get public images (for Explore page)
- * Direct Supabase query
+ * 获取公开图片（用于 Explore 页面）
  */
 export const getPublicImages = async (limit: number = 50) => {
+    const safeLimit = Math.min(100, Math.max(1, limit));
     const { data, error } = await supabase
         .from('images')
         .select(`
@@ -227,7 +228,7 @@ export const getPublicImages = async (limit: number = 50) => {
         `)
         .eq('is_public', true)
         .order('created_at', { ascending: false })
-        .limit(limit);
+        .limit(safeLimit);
 
     if (error) {
         console.error("Get Public Images Error:", error);
@@ -238,8 +239,7 @@ export const getPublicImages = async (limit: number = 50) => {
 };
 
 /**
- * Get custom models
- * Direct Supabase query
+ * 获取自定义模型列表
  */
 export const getCustomModels = async () => {
     const { data, error } = await supabase
@@ -257,10 +257,9 @@ export const getCustomModels = async () => {
 };
 
 /**
- * Save custom model
- * Direct Supabase query
+ * 保存自定义模型
  */
-export const saveCustomModel = async (modelData: any) => {
+export const saveCustomModel = async (modelData: Record<string, unknown>) => {
     const { data, error } = await supabase
         .from('custom_models')
         .insert(modelData)

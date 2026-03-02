@@ -10,8 +10,8 @@ const router = Router();
  */
 router.get('/', authenticate, async (req: Request, res: Response) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 50;
+        const page = Math.max(1, parseInt(req.query.page as string) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
         const offset = (page - 1) * limit;
 
         const { data, error, count } = await supabase
@@ -32,7 +32,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             page,
             limit
         });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch images' });
     }
 });
@@ -43,8 +43,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
  */
 router.get('/public', optionalAuth, async (req: Request, res: Response) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 30;
+        const page = Math.max(1, parseInt(req.query.page as string) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
         const offset = (page - 1) * limit;
 
         const { data, error, count } = await supabase
@@ -68,7 +68,7 @@ router.get('/public', optionalAuth, async (req: Request, res: Response) => {
             page,
             limit
         });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch public images' });
     }
 });
@@ -102,7 +102,7 @@ router.get('/:id', optionalAuth, async (req: Request, res: Response) => {
         }
 
         res.json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to fetch image' });
     }
 });
@@ -142,7 +142,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
         }
 
         res.status(201).json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to create image record' });
     }
 });
@@ -193,7 +193,7 @@ router.patch('/:id', authenticate, async (req: Request, res: Response) => {
         }
 
         res.json(data);
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to update image' });
     }
 });
@@ -229,7 +229,7 @@ router.delete('/:id', authenticate, async (req: Request, res: Response) => {
         }
 
         res.json({ message: 'Image deleted' });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to delete image' });
     }
 });
@@ -247,6 +247,13 @@ router.post('/batch-delete', authenticate, async (req: Request, res: Response) =
             return;
         }
 
+        // 防止 DoS：限制单次批量操作的最大数量
+        const MAX_BATCH_SIZE = 100;
+        if (ids.length > MAX_BATCH_SIZE) {
+            res.status(400).json({ error: `Maximum ${MAX_BATCH_SIZE} items per batch operation` });
+            return;
+        }
+
         const { error } = await supabase
             .from('images')
             .delete()
@@ -259,7 +266,7 @@ router.post('/batch-delete', authenticate, async (req: Request, res: Response) =
         }
 
         res.json({ message: `Deleted ${ids.length} images` });
-    } catch (err) {
+    } catch (_err: unknown) {
         res.status(500).json({ error: 'Failed to batch delete images' });
     }
 });

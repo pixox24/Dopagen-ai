@@ -4,7 +4,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || ''
-const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_KEY') || ''
+const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  || Deno.env.get('SERVICE_ROLE_KEY')
+  || Deno.env.get('SUPABASE_SERVICE_KEY')
+  || Deno.env.get('SERVICE_KEY')
+  || ''
 const BIZYAIR_API_KEY = Deno.env.get('BIZYAIR_API_KEY')
 const ALLOWED_ORIGINS = Deno.env.get('ALLOWED_ORIGINS')?.split(',') || ['http://localhost:3000', 'http://localhost:5173']
 
@@ -98,7 +102,7 @@ Deno.serve(async (req) => {
     // If task is PENDING or PROCESSING, check if we have result_json with external task ID
     // Note: BizyAir API doesn't provide a separate task query endpoint in the current implementation
     // So we check if the task has been pending for too long and update accordingly
-    
+
     const createdAt = new Date(task.created_at).getTime()
     const now = Date.now()
     const elapsedMinutes = (now - createdAt) / (1000 * 60)
@@ -107,9 +111,9 @@ Deno.serve(async (req) => {
     if (task.status === 'PROCESSING' && elapsedMinutes > 10) {
       await adminClient
         .from('generation_tasks')
-        .update({ 
-          status: 'FAILED', 
-          error: 'Generation timeout - please try again' 
+        .update({
+          status: 'FAILED',
+          error: 'Generation timeout - please try again'
         })
         .eq('id', taskId)
 

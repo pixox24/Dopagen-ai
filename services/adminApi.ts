@@ -1,41 +1,10 @@
 /**
- * Admin API 服务层
- * 所有 Admin 操作通过后端 API 完成，不再直接操作数据库
+ * Admin API 服务层（方案 B：直连 Supabase，无独立后端）
+ * 所有操作通过 Supabase Service Role Key 完成
  */
+import { supabase } from '../lib/supabase';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-const ADMIN_TOKEN_KEY = 'dopagen_admin_token';
-
-function getAdminToken(): string | null {
-    return localStorage.getItem(ADMIN_TOKEN_KEY);
-}
-
-export function setAdminToken(token: string): void {
-    localStorage.setItem(ADMIN_TOKEN_KEY, token);
-}
-
-export function clearAdminToken(): void {
-    localStorage.removeItem(ADMIN_TOKEN_KEY);
-}
-
-async function adminFetch<T = any>(path: string, options?: RequestInit): Promise<T> {
-    const token = getAdminToken();
-    const res = await fetch(`${API_BASE}${path}`, {
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            ...options?.headers,
-        },
-    });
-
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `Request failed (${res.status})` }));
-        throw new Error(err.error || `Request failed (${res.status})`);
-    }
-
-    return res.json();
-}
+const ADMIN_SESSION_KEY = 'dopagen_admin_session';
 
 // ============================================
 // 类型定义
@@ -76,71 +45,222 @@ export interface SiteSettings {
 }
 
 // ============================================
-// API 方法
+// Admin Session 管理（基于 localStorage + 环境变量比对）
+// ============================================
+
+export function getAdminSession(): { username: string; exp: number } | null {
+    try {
+        const raw = localStorage.getItem(ADMIN_SESSION_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (parsed.exp < Date.now()) {
+            localStorage.removeItem(ADMIN_SESSION_KEY);
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+export function setAdminToken(token: string): void {
+    // 兼容旧接口：用 session 替代
+    const session = { username: 'admin', exp: Date.now() + 8 * 60 * 60 * 1000, token };
+    localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
+}
+
+export function clearAdminToken(): void {
+    localStorage.removeItem(ADMIN_SESSION_KEY);
+}
+
+// ============================================
+// API 方法（直连 Supabase）
 // ============================================
 
 export const adminApi = {
-    // 认证
-    login: (username: string, password: string) =>
-        adminFetch<AdminLoginResponse>('/api/admin/login', {
-            method: 'POST',
-            body: JSON.stringify({ username, password }),
-        }),
+    // 认证：与前端配置的环境变量对比
+    login: async (username: string, password: string): Promise<AdminLoginResponse> => {
+        const validUser = import.meta.env.VITE_ADMIN_USERNAME || 'fever8';
+        const validPass = import.meta.env.VITE_ADMIN_PASSWORD || '312151';
 
-    verify: () =>
-        adminFetch<{ valid: boolean; username: string }>('/api/admin/verify'),
+        if (username !== validUser || password !== validPass) {
+            throw new Error('Invalid credentials');
+        }
 
-    // 统计
-    getStats: () =>
-        adminFetch<AdminStats>('/api/admin/stats'),
+        const session = {
+            username,
+            exp: Date.now() + 8 * 60 * 60 * 1000, // 8 小时
+            token: `admin_${Date.now()}`
+        };
+        localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
 
-    // 模型管理
-    getModels: () =>
-        adminFetch<AdminModel[]>('/api/admin/models'),
+        return {
+            token: session.token,
+            username,
+            expiresIn: '8h'
+        };
+    },
 
-    createModel: (data: Partial<AdminModel>) =>
-        adminFetch<AdminModel>('/api/admin/models', {
-            method: 'POST',
-            body: JSON.stringify(data),
-        }),
+    verify: async (): Promise<{ valid: boolean; username: string }> => {
+        const session = getAdminSession();
+        if (!session) throw new Error('No valid admin session');
+        return { valid: true, username: session.username };
+    },
 
-    updateModel: (id: string, data: Partial<AdminModel>) =>
-        adminFetch<AdminModel>(`/api/admin/models/${id}`, {
-            method: 'PATCH',
-            body: JSON.stringify(data),
-        }),
+    // 统计：直接查询 Supabase
+    getStats: async (): Promise<AdminStats> => {
+        const [usersRes, imagesRes, tasksRes, modelsRes] = await Promise.allSettled([
+            supabase.from('profiles').select('id', { count: 'exact', head: true }),
+            supabase.from('images').select('id', { count: 'exact', head: true }),
+            supabase.from('generation_tasks').select('id', { count: 'exact', head: true }),
+            supabase.from('custom_models').select('id', { count: 'exact', head: true }),
+        ]);
 
-    deleteModel: (id: string) =>
-        adminFetch<{ message: string }>(`/api/admin/models/${id}`, {
-            method: 'DELETE',
-        }),
+        return {
+            totalUsers: usersRes.status === 'fulfilled' ? (usersRes.value.count ?? 0) : 0,
+            totalImages: imagesRes.status === 'fulfilled' ? (imagesRes.value.count ?? 0) : 0,
+            totalTasks: tasksRes.status === 'fulfilled' ? (tasksRes.value.count ?? 0) : 0,
+            totalModels: modelsRes.status === 'fulfilled' ? (modelsRes.value.count ?? 0) : 0,
+        };
+    },
 
-    toggleModelVisibility: (id: string) =>
-        adminFetch<AdminModel>(`/api/admin/models/${id}/toggle`, {
-            method: 'PATCH',
-        }),
+    // 模型管理：直连 custom_models 表
+    getModels: async (): Promise<AdminModel[]> => {
+        const { data, error } = await supabase
+            .from('custom_models')
+            .select('*')
+            .order('created_at', { ascending: false });
+        if (error) throw new Error(error.message);
+        return data || [];
+    },
 
-    // 设置
-    getSettings: () =>
-        adminFetch<SiteSettings>('/api/admin/settings'),
+    createModel: async (data: Partial<AdminModel>): Promise<AdminModel> => {
+        const { data: created, error } = await supabase
+            .from('custom_models')
+            .insert({
+                name: data.name,
+                version: data.version || '1.0',
+                description: data.description,
+                web_app_id: data.web_app_id,
+                schema: data.schema,
+                input_map: data.input_map,
+                thumbnail_url: data.thumbnail_url,
+                api_key: data.api_key,
+                is_hidden: false,
+                user_id: null, // null = 全局模型
+            })
+            .select()
+            .single();
+        if (error) throw new Error(error.message);
+        return created;
+    },
 
-    updateSettings: (data: Partial<SiteSettings>) =>
-        adminFetch<SiteSettings>('/api/admin/settings', {
-            method: 'PATCH',
-            body: JSON.stringify(data),
-        }),
+    updateModel: async (id: string, data: Partial<AdminModel>): Promise<AdminModel> => {
+        const { data: updated, error } = await supabase
+            .from('custom_models')
+            .update({
+                ...data,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+        if (error) throw new Error(error.message);
+        return updated;
+    },
+
+    deleteModel: async (id: string): Promise<{ message: string }> => {
+        const { error } = await supabase
+            .from('custom_models')
+            .delete()
+            .eq('id', id);
+        if (error) throw new Error(error.message);
+        return { message: 'Deleted' };
+    },
+
+    toggleModelVisibility: async (id: string): Promise<AdminModel> => {
+        // 先读出当前状态
+        const { data: current, error: fetchErr } = await supabase
+            .from('custom_models')
+            .select('is_hidden')
+            .eq('id', id)
+            .single();
+        if (fetchErr) throw new Error(fetchErr.message);
+
+        const { data: updated, error } = await supabase
+            .from('custom_models')
+            .update({ is_hidden: !current.is_hidden, updated_at: new Date().toISOString() })
+            .eq('id', id)
+            .select()
+            .single();
+        if (error) throw new Error(error.message);
+        return updated;
+    },
+
+    // 设置管理：读写 site_settings 表
+    getSettings: async (): Promise<SiteSettings> => {
+        const { data, error } = await supabase
+            .from('site_settings')
+            .select('key, value');
+
+        if (error) {
+            // 表不存在时返回默认值
+            return { bizyairApiKey: '', loadingMessages: [] };
+        }
+
+        const settings: SiteSettings = { bizyairApiKey: '', loadingMessages: [] };
+        (data || []).forEach((row: any) => {
+            if (row.key === 'bizyairApiKey') settings.bizyairApiKey = row.value || '';
+            if (row.key === 'loadingMessages') settings.loadingMessages = row.value || [];
+        });
+        return settings;
+    },
+
+    updateSettings: async (data: Partial<SiteSettings>): Promise<SiteSettings> => {
+        const upserts = [];
+        if (data.bizyairApiKey !== undefined) {
+            upserts.push({ key: 'bizyairApiKey', value: data.bizyairApiKey, updated_at: new Date().toISOString() });
+        }
+        if (data.loadingMessages !== undefined) {
+            upserts.push({ key: 'loadingMessages', value: data.loadingMessages, updated_at: new Date().toISOString() });
+        }
+
+        if (upserts.length > 0) {
+            const { error } = await supabase
+                .from('site_settings')
+                .upsert(upserts, { onConflict: 'key' });
+            if (error) throw new Error(error.message);
+        }
+
+        return adminApi.getSettings();
+    },
 };
 
 // ============================================
-// 公开 API（无需认证，供主站前端使用）
+// 公开 API（供主站前端使用，直连 Supabase）
 // ============================================
 
 export const publicApi = {
-    /** 获取管理员配置的全局模型列表 */
-    getPublicModels: () =>
-        adminFetch<AdminModel[]>('/api/public/models'),
+    /** 获取管理员配置的全局模型列表（user_id IS NULL） */
+    getPublicModels: async (): Promise<AdminModel[]> => {
+        const { data, error } = await supabase
+            .from('custom_models')
+            .select('*')
+            .is('user_id', null)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false });
+        if (error) return [];
+        return data || [];
+    },
 
     /** 获取管理员配置的加载消息 */
-    getPublicSettings: () =>
-        adminFetch<{ loadingMessages: string[] }>('/api/public/settings'),
+    getPublicSettings: async (): Promise<{ loadingMessages: string[] }> => {
+        const { data, error } = await supabase
+            .from('site_settings')
+            .select('value')
+            .eq('key', 'loadingMessages')
+            .single();
+        if (error || !data) return { loadingMessages: [] };
+        return { loadingMessages: data.value || [] };
+    },
 };

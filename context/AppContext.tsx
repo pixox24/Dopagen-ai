@@ -1,11 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { GeneratedImage, Model, GenerationTask } from '../types';
 import { pollTaskStatus } from '../services/api';
+import { publicApi } from '../services/adminApi';
 import { MODELS as DEFAULT_MODELS } from '../constants';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 interface AppContextType {
   userImages: GeneratedImage[];
@@ -76,43 +75,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 从后端 API + Supabase 加载数据
   // ============================================
 
-  // 从后端公开 API 获取管理员配置的全局模型
+  // 从 Supabase 获取管理员配置的全局模型（user_id IS NULL）
   const fetchGlobalModels = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/public/models`);
-      if (res.ok) {
-        const data = await res.json();
-        setGlobalModels((data || []).map((m: any) => ({
-          id: m.id,
-          name: m.name,
-          version: m.version || '1.0',
-          description: m.description || '',
-          isCustom: true,
-          web_app_id: m.web_app_id,
-          schema: m.schema,
-          input_map: m.input_map,
-          thumbnail: m.thumbnail_url,
-          hidden: m.is_hidden,
-          api_key: m.api_key,
-        })));
-      }
+      const data = await publicApi.getPublicModels();
+      setGlobalModels((data || []).map((m: any) => ({
+        id: m.id,
+        name: m.name,
+        version: m.version || '1.0',
+        description: m.description || '',
+        isCustom: true,
+        web_app_id: m.web_app_id,
+        schema: m.schema,
+        input_map: m.input_map,
+        thumbnail: m.thumbnail_url,
+        hidden: m.is_hidden,
+        api_key: m.api_key,
+      })));
     } catch {
-      // 后端不可用时静默降级
+      // Supabase 不可用时静默降级
     }
   }, []);
 
-  // 从后端获取管理员配置的加载消息
+  // 从 Supabase 获取管理员配置的加载消息
   const fetchLoadingMessages = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/public/settings`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.loadingMessages?.length) {
-          setLoadingMessagesState(data.loadingMessages);
-        }
+      const data = await publicApi.getPublicSettings();
+      if (data.loadingMessages?.length) {
+        setLoadingMessagesState(data.loadingMessages);
       }
     } catch {
-      // 后端不可用时使用默认值
+      // Supabase 不可用时使用默认值
     }
   }, []);
 

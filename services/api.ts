@@ -97,191 +97,34 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
         throw new Error(message);
     }
 };
-
 /**
- * 查询任务状态 - 使用原生 fetch 调用 check-task Edge Function
- * 绕开 supabase-js 内部的 AbortController，防止轮询被意外中止
+ * 查询任务状态：直接从本地 Supabase 客户端直查 generation_tasks 表
+ * 我们已经抛弃了落后的 check-task Edge Function 轮询
+ * 这样能在完全杜绝 CORS 报错的同时，大幅节省 Edge Function 的计费调用时长
  */
-const SUPABASE_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
 export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
     try {
-        const response = await fetch(`${SUPABASE_FUNCTIONS_URL}/check-task`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                'apikey': SUPABASE_ANON_KEY,
-            },
-            body: JSON.stringify({ taskId })
-        });
+        const { data, error } = await supabase
+            .from('generation_tasks')
+            .select('status, result_url, error, progress')
+            .eq('id', taskId)
+            .single();
 
-        if (!response.ok) {
-            console.warn(`[Poll] check-task returned ${response.status}`);
+        if (error || !data) {
+            // Task might not be immediately visible due to eventual consistency, just wait
             return { id: taskId, status: 'PENDING' };
         }
 
-        const data = await response.json();
         return {
             id: taskId,
-            status: data.status || 'PENDING',
-            resultUrl: data.resultUrl,
+            status: data.status as TaskResponse['status'] || 'PENDING',
+            resultUrl: data.result_url,
             error: data.error,
             progress: data.progress
         };
     } catch (e: unknown) {
-        if (e instanceof Error && e.name === 'AbortError') {
-            return { id: taskId, status: 'PENDING' };
-        }
         console.error("Polling Error:", e);
         return { id: taskId, status: 'PENDING' };
     }
 };
 
-/**
- * 生成图像并轮询结果（带超时保护）
- */
-export const generateImage = async (options: GenerateOptions): Promise<string[]> => {
-    const submitResponse = await submitGenerationTask(options);
-    const { taskId, imageUrl } = submitResponse;
-
-    // 如果已经返回了 imageUrl，直接返回
-    if (imageUrl) {
-        return [imageUrl];
-    }
-
-    // 轮询等待结果（带超时保护）
-    const MAX_POLL_ATTEMPTS = 60; // 最多轮询 60 次
-    const POLL_INTERVAL_MS = 2000; // 每 2 秒
-    let attempts = 0;
-
-    while (attempts < MAX_POLL_ATTEMPTS) {
-        attempts++;
-        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-        const task = await pollTaskStatus(taskId);
-
-        if (task.status === 'COMPLETED' && task.resultUrl) {
-            return [task.resultUrl];
-        }
-        if (task.status === 'FAILED') {
-            throw new Error(task.error || "Generation Failed");
-        }
-    }
-
-    throw new Error(`Generation timeout after ${MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
-};
-
-/**
- * 获取用户的生成任务列表
- * 通过 RLS 自动过滤当前用户的数据
- */
-export const getUserTasks = async (limit: number = 20): Promise<TaskResponse[]> => {
-    const safeLimit = Math.min(100, Math.max(1, limit));
-    const { data, error } = await supabase
-        .from('generation_tasks')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(safeLimit);
-
-    if (error) {
-        console.error("Get Tasks Error:", error);
-        return [];
-    }
-
-    return data || [];
-};
-
-/**
- * 删除任务
- * RLS 应确保只能删除自己的任务
- */
-export const deleteTask = async (taskId: string): Promise<void> => {
-    const { error } = await supabase
-        .from('generation_tasks')
-        .delete()
-        .eq('id', taskId);
-
-    if (error) {
-        console.error("Delete Task Error:", error);
-        throw new Error(error.message);
-    }
-};
-
-/**
- * 获取用户的图片列表
- */
-export const getUserImages = async (limit: number = 50): Promise<GenerateOptions[]> => {
-    const safeLimit = Math.min(100, Math.max(1, limit));
-    const { data, error } = await supabase
-        .from('images')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(safeLimit);
-
-    if (error) {
-        console.error("Get Images Error:", error);
-        return [];
-    }
-
-    return data || [];
-};
-
-/**
- * 获取公开图片（用于 Explore 页面）
- */
-export const getPublicImages = async (limit: number = 50) => {
-    const safeLimit = Math.min(100, Math.max(1, limit));
-    const { data, error } = await supabase
-        .from('images')
-        .select(`
-            *,
-            user:profiles(username, avatar_url)
-        `)
-        .eq('is_public', true)
-        .order('created_at', { ascending: false })
-        .limit(safeLimit);
-
-    if (error) {
-        console.error("Get Public Images Error:", error);
-        return [];
-    }
-
-    return data || [];
-};
-
-/**
- * 获取自定义模型列表
- */
-export const getCustomModels = async () => {
-    const { data, error } = await supabase
-        .from('custom_models')
-        .select('*')
-        .eq('is_hidden', false)
-        .order('created_at', { ascending: false });
-
-    if (error) {
-        console.error("Get Models Error:", error);
-        return [];
-    }
-
-    return data || [];
-};
-
-/**
- * 保存自定义模型
- */
-export const saveCustomModel = async (modelData: Record<string, unknown>) => {
-    const { data, error } = await supabase
-        .from('custom_models')
-        .insert(modelData)
-        .select()
-        .single();
-
-    if (error) {
-        console.error("Save Model Error:", error);
-        throw new Error(error.message);
-    }
-
-    return data;
-};

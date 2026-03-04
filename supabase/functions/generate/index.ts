@@ -219,30 +219,16 @@ async function processGenerationInBackground(
     const width = params.input_values?.width || 1024
     const height = params.input_values?.height || 1024
 
-    await Promise.all([
-      adminClient
-        .from('generation_tasks')
-        .update({
-          status: 'COMPLETED',
-          result_url: imageUrl,
-          result_json: result,
-          completed_at: new Date().toISOString(),
-          progress: 100
-        })
-        .eq('id', taskId),
-      adminClient
-        .from('images')
-        .insert({
-          user_id: userId,
-          url: imageUrl,
-          prompt,
-          width,
-          height,
-          model_name: modelId,
-          is_public: false,
-          params
-        })
-    ])
+    await adminClient
+      .from('generation_tasks')
+      .update({
+        status: 'COMPLETED',
+        result_url: imageUrl,
+        result_json: result,
+        completed_at: new Date().toISOString(),
+        progress: 100
+      })
+      .eq('id', taskId)
 
     console.log(`[后台] 任务 ${taskId}: ✅ 生成完成!`)
 
@@ -263,7 +249,7 @@ Deno.serve(async (req) => {
 
   // CORS 预检
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders })
+    return new Response('ok', { headers: corsHeaders })
   }
 
   if (req.method !== 'POST') {

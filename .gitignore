@@ -46,3 +46,9 @@ temp/
 *.sqlite
 .vercel
 .env*.local
+
+# 工具链生成的缓存文件（非业务代码）
+skills/
+skills-lock.json
+metadata.json
+architecture_refactoring_plan.md

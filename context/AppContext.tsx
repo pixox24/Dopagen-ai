@@ -4,11 +4,11 @@ import { pollTaskStatus } from '../services/api';
 import { publicApi } from '../services/adminApi';
 import { MODELS as DEFAULT_MODELS } from '../constants';
 import { supabase } from '../lib/supabase';
+import { localImageStore } from '../lib/localImageStore';
 import { useAuth } from './AuthContext';
 
 interface AppContextType {
   userImages: GeneratedImage[];
-  publicImages: GeneratedImage[];
   availableModels: Model[];
   allModels: Model[];
   isLoadingData: boolean;
@@ -33,6 +33,9 @@ interface AppContextType {
   setActiveTaskId: (id: string | null) => void;
   isLoadingTasks: boolean;
   deleteTask: (id: string) => void;
+  // 发布限制
+  dailyPublishLimit: number;
+  getTodayPublishCount: () => number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -50,7 +53,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const { user, session } = useAuth();
 
   const [userImages, setUserImages] = useState<GeneratedImage[]>([]);
-  const [publicImages, setPublicImages] = useState<GeneratedImage[]>([]);
   const [generationPrompt, setGenerationPrompt] = useState('');
   const [isLoadingData, setIsLoadingData] = useState(false);
 
@@ -110,60 +112,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const fetchUserImages = useCallback(async () => {
-    if (!user || !session) return;
     try {
-      const { data, error } = await supabase
-        .from('images')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      if (!error && data) {
-        setUserImages(data.map(img => ({
-          id: img.id,
-          url: img.url,
-          prompt: img.prompt,
-          width: img.width,
-          height: img.height,
-          createdAt: new Date(img.created_at).getTime(),
-          isPublic: img.is_public,
-          userId: img.user_id,
-          model: img.model_name,
-          params: img.params,
-        })));
-      }
+      // 从 IndexedDB 获取图片
+      const dbImages = await localImageStore.getAllImages();
+      setUserImages(dbImages.map(img => ({
+        id: img.id,
+        url: img.url,
+        images: [img.url], // 如果有 batch 的情况视需求填充
+        prompt: img.prompt,
+        width: img.width,
+        height: img.height,
+        createdAt: img.createdAt,
+        isPublic: img.status === 'published',
+        userId: user?.id || 'anon',
+        model: img.model,
+        modelId: img.modelId,
+        params: img.params,
+      })));
     } catch (err: unknown) {
-      console.error('Failed to fetch user images:', err);
+      console.error('Failed to fetch user images from local DB:', err);
     }
-  }, [user, session]);
+  }, [user]);
 
-  const fetchPublicImages = useCallback(async () => {
-    try {
-      const { data, error } = await supabase
-        .from('images')
-        .select('*')
-        .eq('is_public', true)
-        .order('created_at', { ascending: false })
-        .limit(30);
 
-      if (!error && data) {
-        setPublicImages(data.map(img => ({
-          id: img.id,
-          url: img.url,
-          prompt: img.prompt,
-          width: img.width,
-          height: img.height,
-          createdAt: new Date(img.created_at).getTime(),
-          isPublic: true,
-          userId: img.user_id,
-          model: img.model_name,
-          params: img.params,
-        })));
-      }
-    } catch (err: unknown) {
-      console.error('Failed to fetch public images:', err);
-    }
-  }, []);
 
   const fetchCustomModels = useCallback(async () => {
     if (!user || !session) return;
@@ -199,9 +170,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const loadData = async () => {
       setIsLoadingData(true);
+
+      // 初始化时自动清理过期草稿
+      await localImageStore.cleanupOldDrafts();
+
       await Promise.all([
         fetchUserImages(),
-        fetchPublicImages(),
         fetchCustomModels(),
         fetchGlobalModels(),
         fetchLoadingMessages(),
@@ -212,12 +186,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (user && session) {
       loadData();
     } else {
-      // 未登录时也加载公开数据
-      Promise.all([fetchPublicImages(), fetchGlobalModels(), fetchLoadingMessages()]);
+      // 未登录时只加载公开配置，不全量拉取图片
+      Promise.all([fetchGlobalModels(), fetchLoadingMessages()]);
       setUserImages([]);
       setCustomModels([]);
     }
-  }, [user, session, fetchUserImages, fetchPublicImages, fetchCustomModels, fetchGlobalModels, fetchLoadingMessages]);
+  }, [user, session, fetchUserImages, fetchCustomModels, fetchGlobalModels, fetchLoadingMessages]);
 
   /**
    * 任务轮询逻辑 - 全局运行 (性能优化版)
@@ -254,41 +228,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
             const completedAt = Date.now();
+            const imageUrl = statusData.resultUrl;
 
-            // 需要在闭包内找到原始任务以计算耗时
+            // 获取到 URL 后先通知状态变成 Completed
             setTasks(prev => {
               const task = prev.find(t => t.id === taskId);
               if (!task) return prev;
-
               const duration = task.startedAt ? Math.floor((completedAt - task.startedAt) / 1000) : 0;
-
-              // 自动添加到用户图库 (异步)
-              addUserImage({
-                id: 'img_' + Date.now(),
-                url: statusData.resultUrl || '',
-                images: statusData.resultUrl ? [statusData.resultUrl] : [],
-                prompt: task.prompt,
-                width: task.width,
-                height: task.height,
-                createdAt: Date.now(),
-                isPublic: false,
-                userId: user?.id || 'anon',
-                model: task.modelName,
-                modelId: task.modelId,
-                duration
-              });
-
               return prev.map(t => t.id === taskId ? {
                 ...t,
                 status: 'completed',
-                imageUrl: statusData.resultUrl,
-                images: statusData.resultUrl ? [statusData.resultUrl] : [],
+                imageUrl: imageUrl,
+                images: [imageUrl],
                 completedAt,
                 duration
               } : t);
             });
-
             delete pollingAttempts.current[taskId];
+
+            // 闭包外获取 task 拷贝用于存储
+            const currentTask = tasks.find(t => t.id === taskId);
+            if (currentTask && imageUrl) {
+              const duration = currentTask.startedAt ? Math.floor((completedAt - currentTask.startedAt) / 1000) : 0;
+              // 异步下载并保存图片到 IndexedDB
+              fetch(imageUrl)
+                .then(res => res.blob())
+                .then(blob => {
+                  return localImageStore.saveImage({
+                    id: 'img_' + Date.now(),
+                    blob,
+                    prompt: currentTask.prompt,
+                    model: currentTask.modelName,
+                    modelId: currentTask.modelId,
+                    width: currentTask.width,
+                    height: currentTask.height,
+                    createdAt: Date.now(),
+                    params: {}
+                  });
+                })
+                .then(localImg => {
+                  // 乐观更新到本地状态
+                  addUserImage({
+                    id: localImg.id,
+                    url: localImg.url,
+                    images: [localImg.url],
+                    prompt: localImg.prompt,
+                    width: localImg.width,
+                    height: localImg.height,
+                    createdAt: localImg.createdAt,
+                    isPublic: false,
+                    userId: user?.id || 'anon',
+                    model: localImg.model,
+                    modelId: localImg.modelId,
+                    duration
+                  });
+                })
+                .catch(err => console.error("Failed to save generated image to IndexedDB", err));
+            }
           } else if (statusData.status === 'FAILED') {
             setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: statusData.error } : t));
             delete pollingAttempts.current[taskId];
@@ -332,7 +328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshImages = async () => {
-    await Promise.all([fetchUserImages(), fetchPublicImages()]);
+    await fetchUserImages();
   };
 
   const addUserImage = (img: GeneratedImage) => {
@@ -341,47 +337,77 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteUserImage = async (id: string) => {
+    const img = userImages.find(i => i.id === id);
+    if (!img) return;
+
     // 保留旧数据用于回滚
     const previousUserImages = userImages;
     const previousPublicImages = publicImages;
 
     // 乐观更新
     setUserImages(prev => prev.filter(img => img.id !== id));
-    setPublicImages(prev => prev.filter(img => img.id !== id));
 
-    // 同步到 Supabase
-    if (session) {
+    // 先从本地 IndexedDB 中删除
+    await localImageStore.deleteImage(id).catch(console.error);
+
+    // 如果图片已经发布，还要同步删除云端记录
+    if (session && img.isPublic) {
       const { error } = await supabase.from('images').delete().eq('id', id);
       if (error) {
-        console.error('Failed to delete image:', error);
-        // 失败时回滚到之前的状态
-        setUserImages(previousUserImages);
-        setPublicImages(previousPublicImages);
+        console.error('Failed to delete image from Supabase:', error);
+        // 是否回滚视需求而定，因为本地已经被删掉了，一般不推荐给用户跳回去
+        // setUserImages(previousUserImages);
+        // setPublicImages(previousPublicImages);
       }
     }
   };
 
+  // 每日发布上限
+  const DAILY_PUBLISH_LIMIT = 5;
+
+  // 计算今日已发布数量（供 UI 层使用）
+  const getTodayPublishCount = useCallback(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStart = today.getTime();
+    return userImages.filter(img => img.isPublic && img.createdAt >= todayStart).length;
+  }, [userImages]);
+
   const publishImage = async (id: string) => {
     const img = userImages.find(i => i.id === id);
-    if (img && !img.isPublic) {
-      // 保留旧数据用于回滚
-      const previousUserImages = userImages;
-      const previousPublicImages = publicImages;
+    if (!img || img.isPublic) return; // 已发布的不重复
+    if (!user) return;
 
-      // 乐观更新
-      const updatedImg = { ...img, isPublic: true };
-      setUserImages(prev => prev.map(i => i.id === id ? updatedImg : i));
-      setPublicImages(prev => [updatedImg, ...prev]);
+    // 每日发布上限检查
+    const todayCount = getTodayPublishCount();
+    if (todayCount >= DAILY_PUBLISH_LIMIT) {
+      alert(`今日发布已达上限（${DAILY_PUBLISH_LIMIT}张/天），请明天再来 🎨`);
+      return;
+    }
 
-      // 同步到 Supabase，失败时回滚
-      if (session) {
-        const { error } = await supabase.from('images').update({ is_public: true }).eq('id', id);
-        if (error) {
-          console.error('Failed to publish image:', error);
-          setUserImages(previousUserImages);
-          setPublicImages(previousPublicImages);
-        }
+    // 保留旧数据用于回滚
+    const previousUserImages = userImages;
+
+    // 乐观更新 UI：立即标记为已发布状态
+    const updatedImg = { ...img, isPublic: true };
+    setUserImages(prev => prev.map(i => i.id === id ? updatedImg : i));
+
+    try {
+      // 调用发布服务：压缩 → 上传 Storage → 写入数据库 → 更新 IndexedDB
+      const { publishImageToGallery } = await import('../services/publishService');
+      const result = await publishImageToGallery(id, user.id);
+
+      if (!result.success) {
+        // 发布失败：回滚 UI
+        console.error('发布失败:', result.error);
+        setUserImages(previousUserImages);
+        alert(`发布失败: ${result.error}`);
       }
+      // 成功时无需额外操作，乐观更新已经生效
+    } catch (err) {
+      console.error('发布异常:', err);
+      setUserImages(previousUserImages);
+      alert('发布过程发生错误，请重试');
     }
   };
 
@@ -510,13 +536,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   return (
     <AppContext.Provider value={{
       userImages,
-      publicImages,
       availableModels,
       allModels,
       isLoadingData,
       addUserImage,
       deleteUserImage,
       publishImage,
+      dailyPublishLimit: DAILY_PUBLISH_LIMIT,
+      getTodayPublishCount,
       addCustomModel,
       updateCustomModel,
       deleteCustomModel,

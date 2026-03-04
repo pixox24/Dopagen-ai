@@ -1,13 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { submitGenerationTask } from '../services/api';
-import { useTaskPolling } from '../hooks/useTaskPolling';
 import { ASPECT_RATIOS, QUALITY_LEVELS, RESOLUTION_MAP } from '../constants';
 import Button from '../components/Button';
-import { DottedSurface } from '../components/ui/dotted-surface';
 import ImageZoom from '../components/ImageZoom';
-import ImageDetailModal from '../components/ImageDetailModal';
 import { GeneratedImage, GenerationTask } from '../types';
 
 // Default Thumbnail for Models
@@ -107,56 +104,14 @@ const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: 
     );
 });
 
-// Memoized FeedItem component for better performance
-interface FeedItemProps {
-    img: GeneratedImage;
-    onClick: (img: GeneratedImage) => void;
-    onRecreate: (e: React.MouseEvent | null, img: GeneratedImage) => void;
-}
 
-const FeedItem = memo(function FeedItem({ img, onClick, onRecreate }: FeedItemProps) {
-    // Memoize derived values to avoid recalculation on every render
-    const { username, avatarUrl } = useMemo(() => ({
-        username: img.user?.username || img.userId.split('-')[0] || 'Anon',
-        avatarUrl: img.user?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${img.userId}`
-    }), [img.user, img.userId]);
-
-    const handleRecreate = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        onRecreate(e, img);
-    };
-
-    return (
-        <div
-            className="break-inside-avoid relative group rounded-xl overflow-hidden cursor-pointer bg-carbon-card border border-carbon-border hover:border-white/20 transition-all duration-300"
-            onClick={() => onClick(img)}
-        >
-            <img
-                src={img.url}
-                alt={img.prompt}
-                className="w-full h-auto block transition-transform duration-700 group-hover:scale-105"
-                loading="lazy"
-            />
-            <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black via-black/80 to-transparent flex flex-col justify-end p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <img src={avatarUrl} alt={username} className="w-5 h-5 rounded-full border border-white/10 bg-black" />
-                        <span className="text-[10px] font-medium text-white shadow-black drop-shadow">{username}</span>
-                    </div>
-                    <Button onClick={handleRecreate} size="sm" variant="primary" className="!py-1 !px-2.5 !text-[9px] !h-6">
-                        Recreate
-                    </Button>
-                </div>
-            </div>
-        </div>
-    );
-});
 
 const Generate: React.FC = () => {
     const { user } = useAuth();
-    const { addUserImage, publicImages, availableModels, globalApiKey, generationPrompt, setPromptForGeneration } = useApp();
+    const { addUserImage, publishImage, userImages, availableModels, globalApiKey, generationPrompt, setPromptForGeneration } = useApp();
 
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
+    const [publishingId, setPublishingId] = useState<string | null>(null);
 
     const [aspectRatio, setAspectRatio] = useState<string>('1:1');
     const [quality, setQuality] = useState<string>('1K');
@@ -169,16 +124,17 @@ const Generate: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const activeUploadKey = useRef<string | null>(null);
     const [zoomUrl, setZoomUrl] = useState<string | null>(null);
-    const [selectedFeedImage, setSelectedFeedImage] = useState<GeneratedImage | null>(null);
     const [activeBatchIndex, setActiveBatchIndex] = useState<number | null>(null);
 
-    // 使用提取出的自定义 Hook 管理任务轮询（N-02: 拆分上帝组件）
+    // 直接从 AppContext 获取任务状态（原 useTaskPolling Hook 已内联）
     const {
         tasks, setTasks,
         activeTaskId, setActiveTaskId,
-        activeTask, isLoading,
+        isLoadingTasks: isLoading,
         deleteTask: deleteTaskFromPolling
-    } = useTaskPolling();
+    } = useApp();
+
+    const activeTask = useMemo(() => tasks.find(t => t.id === activeTaskId), [tasks, activeTaskId]);
 
 
 
@@ -529,16 +485,19 @@ const Generate: React.FC = () => {
                 <div className="lg:col-span-8 h-[700px]">
                     <div className="h-full carbon-card flex overflow-hidden relative bg-[#050505] shadow-2xl">
                         <div className="flex-1 flex flex-col relative bg-[#050505]">
-                            <div className={`flex-grow flex items-center justify-center relative overflow-hidden p-4 ${isLoading ? 'bg-black' : "bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9IiMyMjIiLz48L3N2Zz4=')]"}`}>
+                            <div className={`flex-grow flex items-center justify-center relative overflow-hidden px-4 pt-4 pb-16 ${isLoading ? 'bg-black' : "bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9IiMyMjIiLz48L3N2Zz4=')]"}`}>
                                 {!activeTask ? (
                                     <div className="text-center text-carbon-muted/20">
                                         <div className="text-4xl mb-2 font-light text-carbon-border">+</div>
                                         <p className="text-xs font-medium uppercase tracking-wider text-carbon-muted/40">Select or Start a Task</p>
                                     </div>
                                 ) : isLoading ? (
-                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black overflow-hidden">
-                                        <DottedSurface className="absolute inset-0 z-0" />
-                                        <div className="relative z-10 text-white/50 text-xs tracking-[0.2em] font-light text-center px-4">
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black overflow-hidden gap-6">
+                                        <div className="spinner">
+                                            <div className="double-bounce1"></div>
+                                            <div className="double-bounce2"></div>
+                                        </div>
+                                        <div className="text-white/40 text-xs tracking-[0.2em] font-light uppercase">
                                             Processing...
                                         </div>
                                     </div>
@@ -579,9 +538,48 @@ const Generate: React.FC = () => {
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                                     </button>
                                     {/* Publish */}
-                                    <button className="p-2 text-carbon-muted hover:text-white rounded-full hover:bg-white/10 transition-colors" title="发布">
-                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
-                                    </button>
+                                    {(() => {
+                                        // 通过当前显示图片的 URL 从 userImages 中查找对应记录
+                                        const matchedImg = userImages.find(img => img.url === displayedImageUrl);
+                                        const isPublished = matchedImg?.isPublic === true;
+                                        const isPublishing = publishingId === matchedImg?.id;
+
+                                        const handlePublish = async () => {
+                                            if (!matchedImg || isPublished || isPublishing) return;
+                                            setPublishingId(matchedImg.id);
+                                            try {
+                                                await publishImage(matchedImg.id);
+                                            } finally {
+                                                setPublishingId(null);
+                                            }
+                                        };
+
+                                        return (
+                                            <button
+                                                onClick={handlePublish}
+                                                disabled={isPublishing || !matchedImg}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-full transition-colors ${isPublished
+                                                    ? 'text-green-400 bg-green-400/10 cursor-default'
+                                                    : isPublishing
+                                                        ? 'text-blue-400 bg-blue-400/10 cursor-wait'
+                                                        : 'text-carbon-muted hover:text-white hover:bg-white/10'
+                                                    }`}
+                                                title={isPublished ? 'Published' : isPublishing ? 'Uploading...' : 'Publish to Gallery'}
+                                            >
+                                                {isPublishing ? (
+                                                    <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                                    </svg>
+                                                ) : (
+                                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                                    </svg>
+                                                )}
+                                                {isPublished ? 'Published' : isPublishing ? 'Uploading' : '发布'}
+                                            </button>
+                                        );
+                                    })()}
                                 </div>
                             )}
                         </div>
@@ -614,23 +612,7 @@ const Generate: React.FC = () => {
                 </div>
             </section>
 
-            {/* Feed */}
-            <section className="mt-16 pt-8 border-t border-carbon-border">
-                <h2 className="text-xl font-semibold text-carbon-text mb-8">Excellent Template</h2>
-                <div className="columns-2 md:columns-3 lg:columns-4 xl:columns-5 gap-4 space-y-4 masonry-grid">
-                    {publicImages.slice(0, 15).map((img: GeneratedImage) => (
-                        <FeedItem
-                            key={img.id}
-                            img={img}
-                            onClick={setSelectedFeedImage}
-                            onRecreate={handleRecreate}
-                        />
-                    ))}
-                </div>
-            </section>
-
             <ImageZoom url={zoomUrl || ''} isOpen={!!zoomUrl} onClose={() => setZoomUrl(null)} />
-            <ImageDetailModal image={selectedFeedImage} isOpen={!!selectedFeedImage} onClose={() => setSelectedFeedImage(null)} onRecreate={handleRecreate} />
         </div>
     );
 };

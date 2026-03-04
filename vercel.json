@@ -7,10 +7,6 @@
   "installCommand": "npm ci",
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "https://your-backend-api.com/api/$1"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

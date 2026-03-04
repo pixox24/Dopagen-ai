@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { GeneratedImage } from '../types';
+import { localImageStore } from '../lib/localImageStore';
 import Button from './Button';
 
 interface ImageDetailModalProps {
@@ -14,6 +15,41 @@ interface ImageDetailModalProps {
 const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onClose, onRecreate }) => {
     const { setPromptForGeneration } = useApp();
     const navigate = useNavigate();
+
+    // 高清原图放大状态
+    const [hasHiRes, setHasHiRes] = useState(false);
+    const [hiResUrl, setHiResUrl] = useState<string | null>(null);
+    const [showHiRes, setShowHiRes] = useState(false);
+    const [loadingHiRes, setLoadingHiRes] = useState(false);
+
+    // 弹窗打开时，异步检测 IndexedDB 中是否有此图的原始大图
+    useEffect(() => {
+        if (!isOpen || !image) {
+            setHasHiRes(false);
+            setHiResUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+            setShowHiRes(false);
+            return;
+        }
+        localImageStore.hasOriginal(image.id).then(setHasHiRes);
+    }, [isOpen, image]);
+
+    // 点击放大：从 IndexedDB 加载原始 Blob
+    const handleViewHiRes = async () => {
+        if (!image || loadingHiRes) return;
+        setLoadingHiRes(true);
+        try {
+            const localImg = await localImageStore.getImageById(image.id);
+            if (localImg?.blob) {
+                const url = URL.createObjectURL(localImg.blob);
+                setHiResUrl(url);
+                setShowHiRes(true);
+            }
+        } catch (err) {
+            console.error('Failed to load hi-res image:', err);
+        } finally {
+            setLoadingHiRes(false);
+        }
+    };
 
     if (!isOpen || !image) return null;
 
@@ -79,6 +115,25 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
                         alt={image.prompt}
                         className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
                     />
+
+                    {/* 高清放大图标：仅当 IndexedDB 有原图时显示 */}
+                    {hasHiRes && (
+                        <button
+                            onClick={handleViewHiRes}
+                            disabled={loadingHiRes}
+                            className="absolute bottom-6 left-6 z-20 flex items-center gap-2 px-3 py-2 bg-black/70 backdrop-blur-sm border border-white/20 rounded-lg text-white text-xs font-medium hover:bg-white/20 transition-all group"
+                            title="查看高清原图"
+                        >
+                            {loadingHiRes ? (
+                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                            ) : (
+                                <svg className="w-4 h-4 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                </svg>
+                            )}
+                            HD 原图
+                        </button>
+                    )}
                 </div>
 
                 {/* Right: Details Panel */}
@@ -209,6 +264,30 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
 
                 </div>
             </div>
+
+            {/* 高清原图全屏查看 */}
+            {showHiRes && hiResUrl && (
+                <div
+                    className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center cursor-zoom-out animate-fade-in"
+                    onClick={() => setShowHiRes(false)}
+                >
+                    <button
+                        onClick={() => setShowHiRes(false)}
+                        className="absolute top-4 right-4 z-50 p-2 bg-white/10 text-white rounded-full hover:bg-white/20 transition-colors"
+                    >
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                    <div className="absolute top-4 left-4 z-50 px-3 py-1.5 bg-green-500/20 border border-green-500/30 rounded-full text-green-400 text-xs font-medium">
+                        HD 原图 · 本地缓存
+                    </div>
+                    <img
+                        src={hiResUrl}
+                        alt="High Resolution"
+                        className="max-w-[95vw] max-h-[95vh] object-contain"
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                </div>
+            )}
         </div>
     );
 };

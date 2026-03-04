@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import Button from '../components/Button';
 
 const Login: React.FC = () => {
@@ -115,13 +116,16 @@ const Login: React.FC = () => {
         {/* Subtle Background Glow */}
         <div className="absolute -top-32 -right-32 w-64 h-64 bg-white/5 rounded-full blur-3xl pointer-events-none"></div>
 
-        <div className="text-center mb-8 relative z-10">
-          <h2 className="text-3xl font-bold tracking-tight text-white mb-2 transition-all">
-            {isSignup ? "Create Account" : "Welcome Back"}
-          </h2>
-          <p className="text-carbon-muted text-sm">
-            {isSignup ? "Join the DopaGen AI community." : "Sign in to continue discovering."}
-          </p>
+        <div className="text-center mb-4 relative z-10">
+          {/* dotLottie 动画 */}
+          <div className="mx-auto w-[200px] h-[200px]">
+            <DotLottieReact
+              src="/lottie/The panda eats popcorn.lottie"
+              loop
+              autoplay
+              style={{ width: '100%', height: '100%' }}
+            />
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 relative z-10 transition-all duration-300">

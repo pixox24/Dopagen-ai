@@ -1,9 +1,10 @@
 import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
-import Layout from './components/Layout';
+import Layout from './layouts/MainLayout';
 import Generate from './pages/Generate';
 import Profile from './pages/Profile';
-import Login from './pages/Login';
+const Login = React.lazy(() => import('./pages/Login'));
+const Explore = React.lazy(() => import('./pages/Explore'));
 
 // Admin imports - Lazy loaded for better bundle splitting
 import AdminLayout from './layouts/AdminLayout';
@@ -23,11 +24,20 @@ const App: React.FC = () => {
       <AppProvider>
         <HashRouter>
           <Routes>
-            <Route path="/login" element={<Login />} />
+            <Route path="/login" element={
+              <Suspense fallback={<div className="flex items-center justify-center min-h-screen bg-black"><div className="text-carbon-muted text-sm">Loading...</div></div>}>
+                <Login />
+              </Suspense>
+            } />
 
             {/* Main App Layout */}
             <Route path="/" element={<Layout />}>
               <Route index element={<Generate />} />
+              <Route path="explore" element={
+                <Suspense fallback={<div className="p-8 text-center text-carbon-muted">Loading...</div>}>
+                  <Explore />
+                </Suspense>
+              } />
               <Route path="profile" element={<Profile />} />
             </Route>
 

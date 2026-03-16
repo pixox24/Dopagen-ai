@@ -3,35 +3,45 @@ import { supabase } from '../lib/supabase';
 
 export interface TaskResponse {
     id: string;
-    status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+    status: 'QUEUED' | 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
     resultUrl?: string;
+    images?: string[];
     error?: string;
     progress?: number;
+    bizyStatus?: string;
+    queueCount?: number;
+    requestId?: string;
 }
 
 export interface SubmitTaskResponse {
     taskId: string;
+    requestId?: string;
     imageUrl?: string;
     status?: string;
+    submittedParams?: {
+        web_app_id: number;
+        input_values: Record<string, string | number | boolean>;
+    };
 }
 
-/**
- * 向 Supabase Edge Function 提交图像生成任务
- */
-export const submitGenerationTask = async (options: GenerateOptions): Promise<SubmitTaskResponse> => {
+const getUserId = async (): Promise<string | null> => {
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        return session?.user?.id || null;
+    } catch {
+        return null;
+    }
+};
+
+export const submitGenerationTask = async (options: GenerateOptions & { prompt?: string, taskId?: string }): Promise<SubmitTaskResponse> => {
     const { model, formState, globalWidth, globalHeight, globalAspectRatio, globalQuality } = options;
     const { schema } = model;
 
     if (!schema) throw new Error("Model schema is missing.");
 
-    // 获取当前用户
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error("User not authenticated");
-
-    // 构建输入参数
     const inputValues: Record<string, string | number | boolean> = {};
 
-    schema.inputs.forEach(input => {
+    schema.inputs.forEach((input) => {
         let valueToUse: string | number | boolean | undefined = undefined;
 
         if (input.generate === 'random_int') {
@@ -50,7 +60,6 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
             }
         }
 
-        // 限制 seed 为正 32 位整数范围
         if (input.key.toLowerCase().includes('seed') && typeof valueToUse === 'number') {
             if (valueToUse > 2147483647) valueToUse = Math.floor(Math.random() * 2147483647);
             if (valueToUse < 0) valueToUse = 0;
@@ -65,66 +74,87 @@ export const submitGenerationTask = async (options: GenerateOptions): Promise<Su
         web_app_id: schema.model_id,
         input_values: inputValues
     };
+    
+    const prompt = typeof options.prompt === 'string' && options.prompt.trim()
+        ? options.prompt.trim()
+        : typeof formState['prompt'] === 'string' && (formState['prompt'] as string).trim()
+            ? (formState['prompt'] as string).trim()
+            : 'Generated Image';
 
-    try {
-        // 调用 Supabase Edge Function
-        const { data, error } = await supabase.functions.invoke('generate', {
-            body: {
-                modelId: model.name || model.id,
-                prompt: formState['prompt'] || 'Generated Image',
-                params: params,
-                userId: user.id
-            }
-        });
+    const taskId = options.taskId || (
+        typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `task_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
+    );
 
-        if (error) {
-            console.error("Edge Function Error:", error);
-            throw new Error(error.message || "Generation failed");
-        }
+    const basePath = (import.meta.env.VITE_BASE_PATH || '').replace(/\/$/, '');
+    const apiUrl = basePath ? `${basePath}/api/generate` : '/api/generate';
 
-        if (!data?.success) {
-            throw new Error(data?.error || "Generation failed");
-        }
+    const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            taskId,
+            modelId: model.id,
+            prompt,
+            params,
+        }),
+    });
 
-        return {
-            taskId: data.taskId,
-            imageUrl: data.imageUrl,
-            status: data.status || 'PENDING'
-        };
-    } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : 'Cannot connect to generation service.';
-        console.error("Submission Error:", message);
-        throw new Error(message);
+    if (!response.ok) {
+        let errText = await response.text().catch(() => '网络请求异常');
+        throw new Error(`${response.status} ${errText}`);
     }
-};
-/**
- * 查询任务状态：直接从本地 Supabase 客户端直查 generation_tasks 表
- * 我们已经抛弃了落后的 check-task Edge Function 轮询
- * 这样能在完全杜绝 CORS 报错的同时，大幅节省 Edge Function 的计费调用时长
- */
-export const pollTaskStatus = async (taskId: string): Promise<TaskResponse> => {
-    try {
-        const { data, error } = await supabase
-            .from('generation_tasks')
-            .select('status, result_url, error, progress')
-            .eq('id', taskId)
-            .single();
 
-        if (error || !data) {
-            // Task might not be immediately visible due to eventual consistency, just wait
-            return { id: taskId, status: 'PENDING' };
-        }
-
-        return {
-            id: taskId,
-            status: data.status as TaskResponse['status'] || 'PENDING',
-            resultUrl: data.result_url,
-            error: data.error,
-            progress: data.progress
-        };
-    } catch (e: unknown) {
-        console.error("Polling Error:", e);
-        return { id: taskId, status: 'PENDING' };
+    const data = await response.json();
+    if (!data?.requestId) {
+        throw new Error('服务端未返回 BizyAir requestId');
     }
+
+    return {
+        taskId,
+        requestId: data.requestId,
+        imageUrl: data.imageUrl,
+        status: data.status || 'QUEUED',
+        submittedParams: params,
+    };
 };
 
+export const pollTaskStatus = async (requestId: string, taskDetails?: any, taskId?: string): Promise<TaskResponse> => {
+    const basePath = (import.meta.env.VITE_BASE_PATH || '').replace(/\/$/, '');
+    const apiUrl = basePath ? `${basePath}/api/status` : '/api/status';
+
+    const userId = await getUserId();
+
+    const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            requestId,
+            taskId,
+            taskDetails: taskDetails ? {
+                ...taskDetails,
+                userId
+            } : null
+        })
+    });
+
+    if (!response.ok) {
+        let errText = await response.text().catch(() => '网络请求异常');
+        throw new Error(`${response.status} ${errText}`);
+    }
+
+    const data = await response.json();
+    // Return typed object compatible with previous usage plus Bizy extras
+    return {
+        id: taskId || '',
+        requestId: data.requestId,
+        status: data.status,
+        resultUrl: data.resultUrl,
+        images: data.images,
+        error: data.error,
+        progress: data.progress,
+        bizyStatus: data.bizyStatus,
+        queueCount: data.queueCount
+    };
+};

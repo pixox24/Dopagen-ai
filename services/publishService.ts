@@ -11,8 +11,46 @@ import { localImageStore, LocalImage } from '../lib/localImageStore';
 export interface PublishResult {
     success: boolean;
     publicUrl?: string;
+    remoteId?: string;
     error?: string;
 }
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const normalizeUploadError = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/aborted/i.test(message) || /AbortError/i.test(message)) {
+        return '上传请求被浏览器或网络中断，请确认网络稳定并重新登录后重试';
+    }
+    return message;
+};
+
+const uploadWithRetry = async (filePath: string, file: Blob, attempts = 3) => {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const { data, error } = await supabase.storage
+            .from('public-gallery')
+            .upload(filePath, file, {
+                contentType: file.type || 'image/webp',
+                cacheControl: '31536000',
+                upsert: false,
+            });
+
+        if (!error) {
+            return { data, error: null };
+        }
+
+        lastError = new Error(normalizeUploadError(error));
+        console.error(`[Publish] 上传尝试 ${attempt}/${attempts} 失败:`, error);
+
+        if (attempt < attempts) {
+            await sleep(500 * attempt);
+        }
+    }
+
+    return { data: null, error: lastError };
+};
 
 /**
  * 将一张本地草稿图片发布到公共画廊
@@ -26,6 +64,11 @@ export interface PublishResult {
  */
 export async function publishImageToGallery(imageId: string, userId: string): Promise<PublishResult> {
     try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+            return { success: false, error: '登录状态已失效，请重新登录后再发布' };
+        }
+
         // ======== 第 1 步：从 IndexedDB 取出图片 ========
         const localImg = await localImageStore.getImageById(imageId);
         if (!localImg) {
@@ -45,31 +88,40 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
         // 将 Blob 转为 File 对象（browser-image-compression 需要 File 类型）
         const file = new File([localImg.blob], `${imageId}.png`, { type: localImg.blob.type || 'image/png' });
 
-        const compressedFile = await imageCompression(file, {
-            maxSizeMB: 1,              // 严格限制 ≤1MB
-            maxWidthOrHeight: targetMaxDim, // 1:1→800px，其他→1024px
-            initialQuality: 0.75,      // 75% 质量，极致压缩
-            useWebWorker: true,        // 使用 Web Worker 不阻塞 UI
-            fileType: 'image/webp',    // 转成 WebP 格式，体积更小
-        });
+        let compressedFile: File;
+        try {
+            compressedFile = await imageCompression(file, {
+                maxSizeMB: 1,              // 严格限制 ≤1MB
+                maxWidthOrHeight: targetMaxDim, // 1:1→800px，其他→1024px
+                initialQuality: 0.75,      // 75% 质量，极致压缩
+                useWebWorker: true,        // 使用 Web Worker 不阻塞 UI
+                fileType: 'image/webp',    // 转成 WebP 格式，体积更小
+            });
+        } catch (workerError) {
+            console.warn('[Publish] Worker 压缩失败，回退到主线程压缩:', workerError);
+            compressedFile = await imageCompression(file, {
+                maxSizeMB: 1,
+                maxWidthOrHeight: targetMaxDim,
+                initialQuality: 0.75,
+                useWebWorker: false,
+                fileType: 'image/webp',
+            });
+        }
 
         console.log(`[Publish] 压缩完成: ${(compressedFile.size / 1024).toFixed(1)}KB (${((1 - compressedFile.size / file.size) * 100).toFixed(0)}% 压缩率)`);
 
         // ======== 第 3 步：上传到 Supabase Storage ========
         const timestamp = Date.now();
         const filePath = `${userId}/${timestamp}_${imageId}.webp`;
-
-        const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('public-gallery')
-            .upload(filePath, compressedFile, {
-                contentType: 'image/webp',
-                cacheControl: '31536000', // 缓存 1 年（图片内容不会变）
-                upsert: false,
-            });
+        const remoteImageId = typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `published_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const uploadBlob = new Blob([await compressedFile.arrayBuffer()], { type: 'image/webp' });
+        const { data: uploadData, error: uploadError } = await uploadWithRetry(filePath, uploadBlob);
 
         if (uploadError) {
             console.error('[Publish] 上传失败:', uploadError);
-            return { success: false, error: `上传失败: ${uploadError.message}` };
+            return { success: false, error: `上传失败: ${normalizeUploadError(uploadError)}` };
         }
 
         // 获取公网访问 URL
@@ -88,7 +140,7 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
         const { error: dbError } = await supabase
             .from('images')
             .insert({
-                id: imageId,
+                id: remoteImageId,
                 user_id: userId,
                 url: publicUrl,
                 prompt: localImg.prompt,
@@ -96,7 +148,10 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
                 height: localImg.height,
                 model_name: localImg.model || 'unknown',
                 is_public: true,
-                params: localImg.params || {},
+                params: {
+                    ...(localImg.params || {}),
+                    local_image_id: imageId
+                },
             });
 
         if (dbError) {
@@ -107,10 +162,13 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
         }
 
         // ======== 第 5 步：更新本地状态 ========
-        await localImageStore.markAsPublished(imageId);
+        await localImageStore.markAsPublished(imageId, {
+            remoteId: remoteImageId,
+            publicUrl
+        });
 
         console.log(`[Publish] ✅ 图片 ${imageId} 发布成功!`);
-        return { success: true, publicUrl };
+        return { success: true, publicUrl, remoteId: remoteImageId };
 
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -6,6 +6,8 @@ export interface GeneratedImage {
   id: string;
   url: string;        // Primary/First Image (for thumbnails)
   images?: string[];  // Array of all images if Batch > 1
+  remoteId?: string;  // Cloud DB record ID
+  publicUrl?: string; // Published public URL
   prompt: string;
   width: number;
   height: number;
@@ -41,6 +43,8 @@ export interface GenerationTask {
   imageUrl?: string;        // Primary/First Image
   images?: string[];        // All images for batch results
   error?: string;
+  requestId?: string;       // Added for polling BizyAir directly
+  params?: any;             // Passed to backend
   createdAt: number;
   startedAt?: number;       // When generation started (processing)
   completedAt?: number;     // When generation completed
@@ -141,7 +145,10 @@ export interface Model {
 
 export interface GenerateOptions {
   model: Model;
-  formState: Record<string, string | number | boolean | null>; // 用户输入的键值对映射
+  formState: Record<string, string | number | boolean | null>; 
+  prompt?: string;
+  taskId?: string;
+  params?: any;
   globalWidth: number;
   globalHeight: number;
   globalAspectRatio: string;

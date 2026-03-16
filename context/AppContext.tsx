@@ -119,6 +119,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: img.id,
         url: img.url,
         images: [img.url], // 如果有 batch 的情况视需求填充
+        remoteId: img.remoteId,
+        publicUrl: img.publicUrl,
         prompt: img.prompt,
         width: img.width,
         height: img.height,
@@ -142,11 +144,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { data, error } = await supabase
         .from('custom_models')
         .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+        .eq('user_id', user.id);
 
       if (!error && data) {
-        setCustomModels(data.map(m => ({
+        const sortedData = [...data].sort((a, b) => {
+          const left = a.created_at ? Date.parse(a.created_at) : 0;
+          const right = b.created_at ? Date.parse(b.created_at) : 0;
+          return right - left;
+        });
+
+        setCustomModels(sortedData.map(m => ({
           id: m.id,
           name: m.name,
           version: m.version || '1.0',
@@ -224,11 +231,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pollingAttempts.current[taskId] = (pollingAttempts.current[taskId] || 0) + 1;
 
         try {
-          const statusData = await pollTaskStatus(taskId);
+          const currentTask = tasks.find(t => t.id === taskId);
+          if (!currentTask?.requestId) {
+            continue;
+          }
+
+          const statusData = await pollTaskStatus(
+            currentTask.requestId,
+            {
+              modelId: currentTask.modelId,
+              prompt: currentTask.prompt,
+              params: currentTask.params
+            },
+            currentTask.id
+          );
 
           if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
             const completedAt = Date.now();
             const imageUrl = statusData.resultUrl;
+            const images = statusData.images?.length ? statusData.images : [imageUrl];
 
             // 获取到 URL 后先通知状态变成 Completed
             setTasks(prev => {
@@ -238,54 +259,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return prev.map(t => t.id === taskId ? {
                 ...t,
                 status: 'completed',
-                imageUrl: imageUrl,
-                images: [imageUrl],
+                imageUrl,
+                images,
                 completedAt,
                 duration
               } : t);
             });
             delete pollingAttempts.current[taskId];
 
-            // 闭包外获取 task 拷贝用于存储
-            const currentTask = tasks.find(t => t.id === taskId);
-            if (currentTask && imageUrl) {
-              const duration = currentTask.startedAt ? Math.floor((completedAt - currentTask.startedAt) / 1000) : 0;
-              // 异步下载并保存图片到 IndexedDB
-              fetch(imageUrl)
-                .then(res => res.blob())
-                .then(blob => {
-                  return localImageStore.saveImage({
-                    id: 'img_' + Date.now(),
-                    blob,
-                    prompt: currentTask.prompt,
-                    model: currentTask.modelName,
-                    modelId: currentTask.modelId,
-                    width: currentTask.width,
-                    height: currentTask.height,
-                    createdAt: Date.now(),
-                    params: {}
-                  });
-                })
-                .then(localImg => {
-                  // 乐观更新到本地状态
-                  addUserImage({
-                    id: localImg.id,
-                    url: localImg.url,
-                    images: [localImg.url],
-                    prompt: localImg.prompt,
-                    width: localImg.width,
-                    height: localImg.height,
-                    createdAt: localImg.createdAt,
-                    isPublic: false,
-                    userId: user?.id || 'anon',
-                    model: localImg.model,
-                    modelId: localImg.modelId,
-                    duration
-                  });
-                })
-                .catch(err => console.error("Failed to save generated image to IndexedDB", err));
-            }
-          } else if (statusData.status === 'FAILED') {
+            const duration = currentTask.startedAt ? Math.floor((completedAt - currentTask.startedAt) / 1000) : 0;
+
+            // 异步下载并保存图片到 IndexedDB
+            fetch(imageUrl)
+              .then(res => res.blob())
+              .then(blob => {
+                return localImageStore.saveImage({
+                  id: 'img_' + Date.now(),
+                  blob,
+                  prompt: currentTask.prompt,
+                  model: currentTask.modelName,
+                  modelId: currentTask.modelId,
+                  width: currentTask.width,
+                  height: currentTask.height,
+                  createdAt: Date.now(),
+                  params: currentTask.params || {}
+                });
+              })
+              .then(localImg => {
+                // 乐观更新到本地状态
+                addUserImage({
+                  id: localImg.id,
+                  url: localImg.url,
+                  images,
+                  prompt: localImg.prompt,
+                  width: localImg.width,
+                  height: localImg.height,
+                  createdAt: localImg.createdAt,
+                  isPublic: false,
+                  userId: user?.id || 'anon',
+                  model: localImg.model,
+                  modelId: localImg.modelId,
+                  params: currentTask.params,
+                  duration
+                });
+              })
+              .catch(err => console.error("Failed to save generated image to IndexedDB", err));
+          } else if (statusData.status === 'FAILED' || statusData.status === 'CANCELLED') {
             setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: statusData.error } : t));
             delete pollingAttempts.current[taskId];
           } else if (pollingAttempts.current[taskId] > 40) { // 提高超时容忍度到 120s
@@ -342,7 +361,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // 保留旧数据用于回滚
     const previousUserImages = userImages;
-    const previousPublicImages = publicImages;
 
     // 乐观更新
     setUserImages(prev => prev.filter(img => img.id !== id));
@@ -352,12 +370,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // 如果图片已经发布，还要同步删除云端记录
     if (session && img.isPublic) {
-      const { error } = await supabase.from('images').delete().eq('id', id);
+      let error = null;
+
+      if (img.remoteId) {
+        const result = await supabase.from('images').delete().eq('id', img.remoteId);
+        error = result.error;
+      } else if (user?.id && img.publicUrl) {
+        const result = await supabase.from('images').delete().eq('user_id', user.id).eq('url', img.publicUrl);
+        error = result.error;
+      }
+
       if (error) {
         console.error('Failed to delete image from Supabase:', error);
         // 是否回滚视需求而定，因为本地已经被删掉了，一般不推荐给用户跳回去
-        // setUserImages(previousUserImages);
-        // setPublicImages(previousPublicImages);
+        setUserImages(previousUserImages);
       }
     }
   };
@@ -402,6 +428,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.error('发布失败:', result.error);
         setUserImages(previousUserImages);
         alert(`发布失败: ${result.error}`);
+      } else {
+        setUserImages(prev => prev.map(i => i.id === id ? {
+          ...i,
+          isPublic: true,
+          remoteId: result.remoteId || i.remoteId,
+          publicUrl: result.publicUrl || i.publicUrl,
+          url: result.publicUrl || i.url,
+          images: result.publicUrl ? [result.publicUrl] : i.images
+        } : i));
       }
       // 成功时无需额外操作，乐观更新已经生效
     } catch (err) {
@@ -458,7 +493,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.schema !== undefined) dbUpdates.schema = updates.schema as unknown as string;
       if (updates.input_map !== undefined) dbUpdates.input_map = updates.input_map as unknown as string;
       if (updates.thumbnail !== undefined) dbUpdates.thumbnail_url = updates.thumbnail;
-      dbUpdates.updated_at = new Date().toISOString();
 
       const { error } = await supabase.from('custom_models').update(dbUpdates).eq('id', id);
       if (error) {

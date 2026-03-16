@@ -4,6 +4,8 @@ export interface LocalImage {
     id: string;
     blob: Blob;
     url: string; // Object URL for rendering
+    remoteId?: string;
+    publicUrl?: string;
     prompt: string;
     model: string;
     modelId?: string;
@@ -46,7 +48,9 @@ export const localImageStore = {
         const images: LocalImage[] = [];
         await store.iterate((value: LocalImage) => {
             if (value.blob) {
-                value.url = URL.createObjectURL(value.blob);
+                value.url = value.status === 'published' && value.publicUrl
+                    ? value.publicUrl
+                    : URL.createObjectURL(value.blob);
             }
             images.push(value);
         });
@@ -59,7 +63,9 @@ export const localImageStore = {
     async getImageById(id: string): Promise<LocalImage | null> {
         const image = await store.getItem<LocalImage>(id);
         if (image && image.blob) {
-            image.url = URL.createObjectURL(image.blob);
+            image.url = image.status === 'published' && image.publicUrl
+                ? image.publicUrl
+                : URL.createObjectURL(image.blob);
         }
         return image;
     },
@@ -67,10 +73,12 @@ export const localImageStore = {
     /**
      * Mark an image as published
      */
-    async markAsPublished(id: string): Promise<void> {
+    async markAsPublished(id: string, metadata?: { remoteId?: string; publicUrl?: string }): Promise<void> {
         const image = await store.getItem<LocalImage>(id);
         if (image) {
             image.status = 'published';
+            if (metadata?.remoteId) image.remoteId = metadata.remoteId;
+            if (metadata?.publicUrl) image.publicUrl = metadata.publicUrl;
             await store.setItem(id, image);
         }
     },

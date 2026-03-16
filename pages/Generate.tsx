@@ -271,6 +271,12 @@ const Generate: React.FC = () => {
             prompt: promptVal,
             modelName: currentModel.name,
             modelId: currentModel.id,
+            params: {
+                web_app_id: currentModel.schema?.model_id,
+                input_values: finalFormState,
+                aspect_ratio: aspectRatio,
+                quality
+            },
             createdAt: now,
             startedAt: now, // Start timing immediately
             width: dimensions.w,
@@ -291,7 +297,7 @@ const Generate: React.FC = () => {
                 globalApiKey: globalApiKey
             });
 
-            const { taskId: backendTaskId, imageUrl, status } = submitResponse;
+            const { taskId: backendTaskId, imageUrl, status, requestId, submittedParams } = submitResponse;
 
             // 3. 用真实的 task ID 更新任务
             setTasks(prev => prev.map(t =>
@@ -299,6 +305,11 @@ const Generate: React.FC = () => {
                     ? {
                         ...t,
                         id: backendTaskId,
+                        requestId,
+                        params: submittedParams ? {
+                            ...t.params,
+                            ...submittedParams
+                        } : t.params,
                         status: status === 'COMPLETED' ? 'completed' : (status === 'PROCESSING' || status === 'PENDING' ? 'processing' : t.status),
                         imageUrl: imageUrl || t.imageUrl,
                         images: imageUrl ? [imageUrl] : t.images

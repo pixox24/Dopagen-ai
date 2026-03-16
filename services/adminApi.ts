@@ -6,6 +6,14 @@ import { supabase } from '../lib/supabase';
 
 const ADMIN_SESSION_KEY = 'dopagen_admin_session';
 
+const sortModels = <T extends { created_at?: string }>(models: T[]): T[] => {
+    return [...models].sort((a, b) => {
+        const left = a.created_at ? Date.parse(a.created_at) : 0;
+        const right = b.created_at ? Date.parse(b.created_at) : 0;
+        return right - left;
+    });
+};
+
 // ============================================
 // 类型定义
 // ============================================
@@ -35,7 +43,7 @@ export interface AdminModel {
     api_key?: string;
     is_hidden: boolean;
     user_id?: string | null;
-    created_at: string;
+    created_at?: string;
     updated_at?: string;
 }
 
@@ -128,10 +136,9 @@ export const adminApi = {
     getModels: async (): Promise<AdminModel[]> => {
         const { data, error } = await supabase
             .from('custom_models')
-            .select('*')
-            .order('created_at', { ascending: false });
+            .select('*');
         if (error) throw new Error(error.message);
-        return data || [];
+        return sortModels(data || []);
     },
 
     createModel: async (data: Partial<AdminModel>): Promise<AdminModel> => {
@@ -158,10 +165,7 @@ export const adminApi = {
     updateModel: async (id: string, data: Partial<AdminModel>): Promise<AdminModel> => {
         const { data: updated, error } = await supabase
             .from('custom_models')
-            .update({
-                ...data,
-                updated_at: new Date().toISOString()
-            })
+            .update(data)
             .eq('id', id)
             .select()
             .single();
@@ -189,7 +193,7 @@ export const adminApi = {
 
         const { data: updated, error } = await supabase
             .from('custom_models')
-            .update({ is_hidden: !current.is_hidden, updated_at: new Date().toISOString() })
+            .update({ is_hidden: !current.is_hidden })
             .eq('id', id)
             .select()
             .single();
@@ -219,10 +223,10 @@ export const adminApi = {
     updateSettings: async (data: Partial<SiteSettings>): Promise<SiteSettings> => {
         const upserts = [];
         if (data.bizyairApiKey !== undefined) {
-            upserts.push({ key: 'bizyairApiKey', value: data.bizyairApiKey, updated_at: new Date().toISOString() });
+            upserts.push({ key: 'bizyairApiKey', value: data.bizyairApiKey });
         }
         if (data.loadingMessages !== undefined) {
-            upserts.push({ key: 'loadingMessages', value: data.loadingMessages, updated_at: new Date().toISOString() });
+            upserts.push({ key: 'loadingMessages', value: data.loadingMessages });
         }
 
         if (upserts.length > 0) {
@@ -246,11 +250,9 @@ export const publicApi = {
         const { data, error } = await supabase
             .from('custom_models')
             .select('*')
-            .is('user_id', null)
-            .eq('is_hidden', false)
-            .order('created_at', { ascending: false });
+            .is('user_id', null);
         if (error) return [];
-        return data || [];
+        return sortModels((data || []).filter(model => model.is_hidden !== true));
     },
 
     /** 获取管理员配置的加载消息 */

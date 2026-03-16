@@ -1,7 +1,7 @@
 import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './layouts/MainLayout';
-import Generate from './pages/Generate';
+import Home from './pages/Home';
 import Profile from './pages/Profile';
 const Login = React.lazy(() => import('./pages/Login'));
 const Explore = React.lazy(() => import('./pages/Explore'));
@@ -32,7 +32,7 @@ const App: React.FC = () => {
 
             {/* Main App Layout */}
             <Route path="/" element={<Layout />}>
-              <Route index element={<Generate />} />
+              <Route index element={<Home />} />
               <Route path="explore" element={
                 <Suspense fallback={<div className="p-8 text-center text-carbon-muted">Loading...</div>}>
                   <Explore />

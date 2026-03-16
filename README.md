@@ -360,7 +360,7 @@ This split prevents UUID schema errors when the local draft key is not a valid U
 
 ### Publish constraints
 
-- Daily publish limit currently defaults to `5`
+- Daily publish limit currently defaults to `50`
 - Limit is enforced in `AppContext`
 - Published images are stored in Supabase Storage bucket `public-gallery`
 

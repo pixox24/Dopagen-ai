@@ -389,7 +389,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // 每日发布上限
-  const DAILY_PUBLISH_LIMIT = 5;
+  const DAILY_PUBLISH_LIMIT = 50;
 
   // 计算今日已发布数量（供 UI 层使用）
   const getTodayPublishCount = useCallback(() => {

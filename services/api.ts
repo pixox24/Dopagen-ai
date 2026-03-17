@@ -1,5 +1,4 @@
 import { GenerateOptions } from '../types';
-import { supabase } from '../lib/supabase';
 
 export interface TaskResponse {
     id: string;
@@ -19,30 +18,32 @@ export interface SubmitTaskResponse {
     imageUrl?: string;
     status?: string;
     submittedParams?: {
-        web_app_id: number;
+        web_app_id: string | number;
         input_values: Record<string, string | number | boolean>;
     };
 }
 
-const getUserId = async (): Promise<string | null> => {
-    try {
-        const { data: { session } } = await supabase.auth.getSession();
-        return session?.user?.id || null;
-    } catch {
-        return null;
-    }
-};
+interface PollTaskDetails {
+    modelId?: string;
+    prompt?: string;
+    params?: unknown;
+    userId?: string | null;
+}
 
-export const submitGenerationTask = async (options: GenerateOptions & { prompt?: string, taskId?: string }): Promise<SubmitTaskResponse> => {
+export const submitGenerationTask = async (
+    options: GenerateOptions & { prompt?: string; taskId?: string }
+): Promise<SubmitTaskResponse> => {
     const { model, formState, globalWidth, globalHeight, globalAspectRatio, globalQuality } = options;
     const { schema } = model;
 
-    if (!schema) throw new Error("Model schema is missing.");
+    if (!schema) {
+        throw new Error('Model schema is missing.');
+    }
 
     const inputValues: Record<string, string | number | boolean> = {};
 
     schema.inputs.forEach((input) => {
-        let valueToUse: string | number | boolean | undefined = undefined;
+        let valueToUse: string | number | boolean | undefined;
 
         if (input.generate === 'random_int') {
             valueToUse = Math.floor(Math.random() * 2147483647);
@@ -74,12 +75,13 @@ export const submitGenerationTask = async (options: GenerateOptions & { prompt?:
         web_app_id: schema.model_id,
         input_values: inputValues
     };
-    
-    const prompt = typeof options.prompt === 'string' && options.prompt.trim()
-        ? options.prompt.trim()
-        : typeof formState['prompt'] === 'string' && (formState['prompt'] as string).trim()
-            ? (formState['prompt'] as string).trim()
-            : 'Generated Image';
+
+    const prompt =
+        typeof options.prompt === 'string' && options.prompt.trim()
+            ? options.prompt.trim()
+            : typeof formState.prompt === 'string' && formState.prompt.trim()
+                ? formState.prompt.trim()
+                : 'Generated Image';
 
     const taskId = options.taskId || (
         typeof crypto !== 'undefined' && crypto.randomUUID
@@ -102,13 +104,13 @@ export const submitGenerationTask = async (options: GenerateOptions & { prompt?:
     });
 
     if (!response.ok) {
-        let errText = await response.text().catch(() => '网络请求异常');
+        const errText = await response.text().catch(() => 'Network request failed');
         throw new Error(`${response.status} ${errText}`);
     }
 
     const data = await response.json();
     if (!data?.requestId) {
-        throw new Error('服务端未返回 BizyAir requestId');
+        throw new Error('Server did not return a BizyAir requestId');
     }
 
     return {
@@ -120,11 +122,13 @@ export const submitGenerationTask = async (options: GenerateOptions & { prompt?:
     };
 };
 
-export const pollTaskStatus = async (requestId: string, taskDetails?: any, taskId?: string): Promise<TaskResponse> => {
+export const pollTaskStatus = async (
+    requestId: string,
+    taskDetails?: PollTaskDetails,
+    taskId?: string
+): Promise<TaskResponse> => {
     const basePath = (import.meta.env.VITE_BASE_PATH || '').replace(/\/$/, '');
     const apiUrl = basePath ? `${basePath}/api/status` : '/api/status';
-
-    const userId = await getUserId();
 
     const response = await fetch(apiUrl, {
         method: 'POST',
@@ -132,20 +136,16 @@ export const pollTaskStatus = async (requestId: string, taskDetails?: any, taskI
         body: JSON.stringify({
             requestId,
             taskId,
-            taskDetails: taskDetails ? {
-                ...taskDetails,
-                userId
-            } : null
+            taskDetails: taskDetails || null
         })
     });
 
     if (!response.ok) {
-        let errText = await response.text().catch(() => '网络请求异常');
+        const errText = await response.text().catch(() => 'Network request failed');
         throw new Error(`${response.status} ${errText}`);
     }
 
     const data = await response.json();
-    // Return typed object compatible with previous usage plus Bizy extras
     return {
         id: taskId || '',
         requestId: data.requestId,

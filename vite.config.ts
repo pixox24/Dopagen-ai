@@ -65,6 +65,50 @@ const createDevApiPlugin = (env: Record<string, string>) => ({
   }
 });
 
+const getManualChunk = (id: string) => {
+  const normalizedId = id.replace(/\\/g, '/');
+
+  if (!normalizedId.includes('/node_modules/')) {
+    return undefined;
+  }
+
+  if (
+    normalizedId.includes('/@lottiefiles/dotlottie-react/') ||
+    normalizedId.includes('/dotlottie-web/')
+  ) {
+    return 'vendor-lottie';
+  }
+
+  if (normalizedId.includes('/@supabase/supabase-js/')) {
+    return 'vendor-supabase';
+  }
+
+  if (
+    normalizedId.includes('/react-router-dom/') ||
+    normalizedId.includes('/react-router/')
+  ) {
+    return 'vendor-router';
+  }
+
+  if (
+    normalizedId.includes('/react-dom/') ||
+    normalizedId.includes('/react/') ||
+    normalizedId.includes('/scheduler/')
+  ) {
+    return 'vendor-react';
+  }
+
+  if (normalizedId.includes('/localforage/')) {
+    return 'vendor-offline-store';
+  }
+
+  if (normalizedId.includes('/browser-image-compression/')) {
+    return 'vendor-image-utils';
+  }
+
+  return undefined;
+};
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   process.env.BIZYAIR_API_KEY = env.BIZYAIR_API_KEY;
@@ -87,6 +131,13 @@ export default defineConfig(({ mode }) => {
       'process.env.BIZYAIR_API_KEY': JSON.stringify(env.BIZYAIR_API_KEY),
       'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
       'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY),
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: getManualChunk,
+        }
+      }
     },
     resolve: {
       alias: {

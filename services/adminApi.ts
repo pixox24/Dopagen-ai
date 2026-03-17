@@ -5,6 +5,8 @@
 import { supabase } from '../lib/supabase';
 
 const ADMIN_SESSION_KEY = 'dopagen_admin_session';
+const ADMIN_MODEL_SELECT =
+    'id,name,version,description,web_app_id,schema,input_map,thumbnail_url,api_key,is_hidden,user_id,created_at,updated_at';
 
 const sortModels = <T extends { created_at?: string }>(models: T[]): T[] => {
     return [...models].sort((a, b) => {
@@ -136,7 +138,7 @@ export const adminApi = {
     getModels: async (): Promise<AdminModel[]> => {
         const { data, error } = await supabase
             .from('custom_models')
-            .select('*');
+            .select(ADMIN_MODEL_SELECT);
         if (error) throw new Error(error.message);
         return sortModels(data || []);
     },
@@ -237,31 +239,5 @@ export const adminApi = {
         }
 
         return adminApi.getSettings();
-    },
-};
-
-// ============================================
-// 公开 API（供主站前端使用，直连 Supabase）
-// ============================================
-
-export const publicApi = {
-    /** 获取管理员配置的全局模型列表（user_id IS NULL） */
-    getPublicModels: async (): Promise<AdminModel[]> => {
-        const { data, error } = await supabase
-            .from('custom_models')
-            .select('*')
-            .is('user_id', null);
-        if (error) return [];
-        return sortModels((data || []).filter(model => model.is_hidden !== true));
-    },
-
-    /** 获取管理员配置的加载消息 */
-    getPublicSettings: async (): Promise<{ loadingMessages: string[] }> => {
-        const { data, error } = await supabase
-            .from('site_settings')
-            .select('value')
-            .eq('key', 'loadingMessages');
-        if (error || !data || data.length === 0) return { loadingMessages: [] };
-        return { loadingMessages: data[0].value || [] };
     },
 };

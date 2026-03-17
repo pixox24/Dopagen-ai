@@ -1,7 +1,9 @@
 import React, { Suspense, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import Generate from './Generate';
 
 const ExploreFeed = React.lazy(() => import('../components/ExploreFeed'));
+type IdleCallbackHandle = number;
 
 const ExploreSectionSkeleton: React.FC = () => (
   <div className="columns-2 md:columns-3 lg:columns-4 xl:columns-5 gap-4 space-y-4">
@@ -17,8 +19,49 @@ const ExploreSectionSkeleton: React.FC = () => (
 );
 
 const Home: React.FC = () => {
+  const location = useLocation();
   const [shouldLoadExplore, setShouldLoadExplore] = useState(false);
+  const exploreSectionRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const shouldFocusExplore = new URLSearchParams(location.search).get('section') === 'explore';
+
+  useEffect(() => {
+    if (shouldLoadExplore) return;
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let idleId: IdleCallbackHandle | undefined;
+
+    const prefetchExplore = async () => {
+      try {
+        const exploreModule = await import('../components/ExploreFeed');
+
+        if (!cancelled) {
+          void exploreModule.warmPublicFeedCache?.();
+        }
+      } catch (error) {
+        console.warn('[Home] Failed to prefetch explore feed.', error);
+      }
+    };
+
+    if ('requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(() => {
+        void prefetchExplore();
+      }, { timeout: 1500 });
+    } else {
+      timeoutId = setTimeout(() => {
+        void prefetchExplore();
+      }, 900);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (idleId !== undefined && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [shouldLoadExplore]);
 
   useEffect(() => {
     if (!sentinelRef.current || shouldLoadExplore) return;
@@ -37,11 +80,29 @@ const Home: React.FC = () => {
     return () => observer.disconnect();
   }, [shouldLoadExplore]);
 
+  useEffect(() => {
+    if (!shouldFocusExplore) {
+      return;
+    }
+
+    setShouldLoadExplore(true);
+
+    const scrollTimer = window.setTimeout(() => {
+      exploreSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 40);
+
+    return () => window.clearTimeout(scrollTimer);
+  }, [location.key, shouldFocusExplore]);
+
   return (
     <div className="space-y-16">
       <Generate />
 
-      <section className="relative overflow-hidden rounded-[28px] border border-carbon-border bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_35%),linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))] px-4 py-8 sm:px-6 lg:px-8">
+      <section
+        id="explore-feed"
+        ref={exploreSectionRef}
+        className="relative scroll-mt-24 overflow-hidden rounded-[28px] border border-carbon-border bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_35%),linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))] px-4 py-8 sm:px-6 lg:px-8"
+      >
         <div className="pointer-events-none absolute inset-0 opacity-40" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)', backgroundSize: '26px 26px' }} />
 
         <div className="relative mb-8 flex flex-col gap-4 border-b border-white/8 pb-6 lg:flex-row lg:items-end lg:justify-between">

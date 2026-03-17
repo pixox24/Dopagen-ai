@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { GeneratedImage } from '../types';
-import { localImageStore } from '../lib/localImageStore';
 import Button from './Button';
+import AvatarBadge from './AvatarBadge';
+import { supabase } from '../lib/supabase';
 
 interface ImageDetailModalProps {
     image: GeneratedImage | null;
@@ -11,6 +12,11 @@ interface ImageDetailModalProps {
     onClose: () => void;
     onRecreate?: (e: React.MouseEvent | null, img: GeneratedImage) => void;
 }
+
+const loadLocalImageStore = async () => {
+    const module = await import('../lib/localImageStore');
+    return module.localImageStore;
+};
 
 const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onClose, onRecreate }) => {
     const { setPromptForGeneration } = useApp();
@@ -21,6 +27,7 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
     const [hiResUrl, setHiResUrl] = useState<string | null>(null);
     const [showHiRes, setShowHiRes] = useState(false);
     const [loadingHiRes, setLoadingHiRes] = useState(false);
+    const [detailParams, setDetailParams] = useState<GeneratedImage['params'] | null>(null);
 
     // 弹窗打开时，异步检测 IndexedDB 中是否有此图的原始大图
     useEffect(() => {
@@ -28,16 +35,86 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
             setHasHiRes(false);
             setHiResUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
             setShowHiRes(false);
+            setDetailParams(null);
             return;
         }
-        localImageStore.hasOriginal(image.id).then(setHasHiRes);
+
+        const canHaveLocalOriginal = image.id.startsWith('img_');
+        if (!canHaveLocalOriginal) {
+            setHasHiRes(false);
+            return;
+        }
+
+        let cancelled = false;
+        void loadLocalImageStore()
+            .then((localImageStore) => localImageStore.hasOriginal(image.id))
+            .then((result) => {
+                if (!cancelled) {
+                    setHasHiRes(result);
+                }
+            })
+            .catch((error) => {
+                console.error('Failed to check local hi-res image:', error);
+                if (!cancelled) {
+                    setHasHiRes(false);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
     }, [isOpen, image]);
+
+    useEffect(() => {
+        if (!isOpen || !image) {
+            return;
+        }
+
+        if (image.params) {
+            setDetailParams(image.params);
+            return;
+        }
+
+        if (!image.remoteId) {
+            setDetailParams(null);
+            return;
+        }
+
+        let cancelled = false;
+        setDetailParams(null);
+
+        const loadDetailParams = async () => {
+            const { data, error } = await supabase
+                .from('images')
+                .select('params')
+                .eq('id', image.remoteId)
+                .single();
+
+            if (cancelled) {
+                return;
+            }
+
+            if (error) {
+                console.error('Failed to load image params:', error);
+                return;
+            }
+
+            setDetailParams(data?.params || null);
+        };
+
+        void loadDetailParams();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [image, isOpen]);
 
     // 点击放大：从 IndexedDB 加载原始 Blob
     const handleViewHiRes = async () => {
         if (!image || loadingHiRes) return;
         setLoadingHiRes(true);
         try {
+            const localImageStore = await loadLocalImageStore();
             const localImg = await localImageStore.getImageById(image.id);
             if (localImg?.blob) {
                 const url = URL.createObjectURL(localImg.blob);
@@ -52,6 +129,8 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
     };
 
     if (!isOpen || !image) return null;
+
+    const resolvedParams = image.params || detailParams || undefined;
 
     const handleRecreate = () => {
         if (onRecreate && image) {
@@ -90,8 +169,6 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
 
     // Use joined user data or fallback
     const username = image.user?.username || image.userId.split('-')[0] || 'Creator';
-    const avatarUrl = image.user?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${image.userId}`;
-
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 md:p-8 animate-fade-in">
             {/* Close Overlay */}
@@ -142,7 +219,14 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
                     {/* Header: User Profile */}
                     <div className="p-6 border-b border-carbon-border flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                            <img src={avatarUrl} alt={username} className="w-10 h-10 rounded-full border border-carbon-border bg-carbon-surface" />
+                            <AvatarBadge
+                                name={username}
+                                seed={image.userId}
+                                src={image.user?.avatar}
+                                className="h-10 w-10 border border-carbon-border bg-carbon-surface"
+                                textClassName="text-xs"
+                                alt={username}
+                            />
                             <div>
                                 <h3 className="text-sm font-semibold text-white">{username}</h3>
                                 <p className="text-xs text-carbon-muted">Verified Creator</p>
@@ -193,38 +277,38 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
                         </div>
 
                         {/* Generation Parameters */}
-                        {image.params && (
+                        {resolvedParams && (
                             <div>
                                 <h4 className="text-[10px] font-bold text-carbon-muted uppercase tracking-wider mb-3">Parameters</h4>
                                 <div className="grid grid-cols-2 gap-2 text-xs">
-                                    {image.params.aspect_ratio && (
+                                    {resolvedParams.aspect_ratio && (
                                         <div className="flex justify-between">
                                             <span className="text-carbon-muted">Aspect Ratio:</span>
-                                            <span className="text-carbon-text">{image.params.aspect_ratio}</span>
+                                            <span className="text-carbon-text">{resolvedParams.aspect_ratio}</span>
                                         </div>
                                     )}
-                                    {image.params.quality && (
+                                    {resolvedParams.quality && (
                                         <div className="flex justify-between">
                                             <span className="text-carbon-muted">Quality:</span>
-                                            <span className="text-carbon-text">{image.params.quality}</span>
+                                            <span className="text-carbon-text">{resolvedParams.quality}</span>
                                         </div>
                                     )}
-                                    {image.params.input_values?.seed !== undefined && (
+                                    {resolvedParams.input_values?.seed !== undefined && (
                                         <div className="flex justify-between">
                                             <span className="text-carbon-muted">Seed:</span>
-                                            <span className="text-carbon-text">{image.params.input_values.seed}</span>
+                                            <span className="text-carbon-text">{resolvedParams.input_values.seed}</span>
                                         </div>
                                     )}
-                                    {image.params.input_values?.steps !== undefined && (
+                                    {resolvedParams.input_values?.steps !== undefined && (
                                         <div className="flex justify-between">
                                             <span className="text-carbon-muted">Steps:</span>
-                                            <span className="text-carbon-text">{image.params.input_values.steps}</span>
+                                            <span className="text-carbon-text">{resolvedParams.input_values.steps}</span>
                                         </div>
                                     )}
-                                    {image.params.input_values?.cfg_scale !== undefined && (
+                                    {resolvedParams.input_values?.cfg_scale !== undefined && (
                                         <div className="flex justify-between">
                                             <span className="text-carbon-muted">CFG Scale:</span>
-                                            <span className="text-carbon-text">{image.params.input_values.cfg_scale}</span>
+                                            <span className="text-carbon-text">{resolvedParams.input_values.cfg_scale}</span>
                                         </div>
                                     )}
                                 </div>
@@ -235,7 +319,7 @@ const ImageDetailModal: React.FC<ImageDetailModalProps> = ({ image, isOpen, onCl
                         <div>
                             <h4 className="text-[10px] font-bold text-carbon-muted uppercase tracking-wider mb-3">Negative Prompt</h4>
                             <p className="text-xs text-carbon-muted italic leading-relaxed">
-                                {image.params?.input_values?.negative_prompt || 'None'}
+                                {resolvedParams?.input_values?.negative_prompt || 'None'}
                             </p>
                         </div>
 

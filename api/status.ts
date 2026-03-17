@@ -127,28 +127,28 @@ export async function handleStatusRequest(method: string | undefined, body: any,
             }
 
             if (SUPABASE_URL && SUPABASE_KEY && taskId && taskDetails) {
-                try {
-                    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-                        auth: { autoRefreshToken: false, persistSession: false }
-                    });
+                const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+                    auth: { autoRefreshToken: false, persistSession: false }
+                });
 
-                    const now = new Date().toISOString();
-
-                    await supabase
-                        .from('generation_tasks')
-                        .upsert({
-                            id: taskId,
-                            user_id: taskDetails.userId || null,
-                            model_id: taskDetails.modelId,
-                            prompt: taskDetails.prompt,
-                            params: taskDetails.params,
-                            status: 'COMPLETED',
-                            result_url: resultUrl,
-                            created_at: now,
-                        }, { onConflict: 'id' });
-                } catch (dbErr) {
-                    console.error('Failed lazy persistence to Supabase:', dbErr);
-                }
+                void (async () => {
+                    try {
+                        await supabase
+                            .from('generation_tasks')
+                            .upsert({
+                                id: taskId,
+                                user_id: taskDetails.userId || null,
+                                model_id: taskDetails.modelId,
+                                prompt: taskDetails.prompt,
+                                params: taskDetails.params,
+                                status: 'COMPLETED',
+                                result_url: resultUrl,
+                                created_at: new Date().toISOString(),
+                            }, { onConflict: 'id' });
+                    } catch (dbErr) {
+                        console.error('Failed lazy persistence to Supabase:', dbErr);
+                    }
+                })();
             }
 
             return {

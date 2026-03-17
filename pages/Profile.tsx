@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { Suspense, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import Button from '../components/Button';
-import ImageZoom from '../components/ImageZoom';
 import { useNavigate } from 'react-router-dom';
 import { GeneratedImage } from '../types';
+import AvatarBadge from '../components/AvatarBadge';
+
+const ImageZoom = React.lazy(() => import('../components/ImageZoom'));
 
 const Profile: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const { userImages, deleteUserImage, publishImage, dailyPublishLimit, getTodayPublishCount } = useApp();
   const navigate = useNavigate();
 
@@ -15,6 +17,10 @@ const Profile: React.FC = () => {
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [publishingIds, setPublishingIds] = useState<Set<string>>(new Set());
+  const todayPublishCount = getTodayPublishCount();
+  const publishedCount = useMemo(() => userImages.filter((img) => img.isPublic).length, [userImages]);
+  const isDailyPublishLimitReached = todayPublishCount >= dailyPublishLimit;
+  const remainingPublishCount = Math.max(dailyPublishLimit - todayPublishCount, 0);
 
   // 包装发布逻辑，增加进行中状态
   const handlePublish = async (id: string) => {
@@ -98,10 +104,14 @@ const Profile: React.FC = () => {
       <div className="carbon-card p-8 md:p-10">
         <div className="flex flex-col md:flex-row items-center gap-8">
           <div className="relative">
-            <img
-              src={user.avatar}
+            <AvatarBadge
+              name={user.username}
+              seed={user.id || user.email}
+              src={user.avatar || undefined}
+              className="h-24 w-24 border-2 border-carbon-border bg-carbon-surface"
+              textClassName="text-2xl"
               alt={user.username}
-              className="w-24 h-24 rounded-full object-cover border-2 border-carbon-border bg-carbon-surface"
+              loading="eager"
             />
           </div>
 
@@ -121,7 +131,7 @@ const Profile: React.FC = () => {
                 <span className="text-[10px] uppercase text-carbon-muted tracking-wide">Generated</span>
               </div>
               <div>
-                <span className="block text-xl font-bold text-white">{userImages.filter(i => i.isPublic).length}</span>
+                <span className="block text-xl font-bold text-white">{publishedCount}</span>
                 <span className="text-[10px] uppercase text-carbon-muted tracking-wide">Published</span>
               </div>
             </div>
@@ -222,16 +232,16 @@ const Profile: React.FC = () => {
                     {/* Publish / Publishing / Published */}
                     <button
                       onClick={(e) => { e.stopPropagation(); if (!img.isPublic && !publishingIds.has(img.id)) handlePublish(img.id); }}
-                      disabled={publishingIds.has(img.id) || (!img.isPublic && getTodayPublishCount() >= dailyPublishLimit)}
+                      disabled={publishingIds.has(img.id) || (!img.isPublic && isDailyPublishLimitReached)}
                       className={`p-1.5 rounded transition-colors ${img.isPublic
                         ? 'text-green-400 bg-green-400/10 cursor-default'
                         : publishingIds.has(img.id)
                           ? 'text-blue-400 bg-blue-400/10 cursor-wait'
-                          : getTodayPublishCount() >= dailyPublishLimit
+                          : isDailyPublishLimitReached
                             ? 'text-carbon-muted/30 cursor-not-allowed'
                             : 'text-carbon-muted hover:text-white hover:bg-white/10'
                         }`}
-                      title={img.isPublic ? 'Published' : publishingIds.has(img.id) ? 'Uploading...' : getTodayPublishCount() >= dailyPublishLimit ? `今日已达上限（${dailyPublishLimit}张/天）` : `Publish to Gallery（今日剩余 ${dailyPublishLimit - getTodayPublishCount()} 张）`}
+                      title={img.isPublic ? 'Published' : publishingIds.has(img.id) ? 'Uploading...' : isDailyPublishLimitReached ? `Daily limit reached (${dailyPublishLimit}/day)` : `Publish to Gallery (${remainingPublishCount} left today)`}
                     >
                       {publishingIds.has(img.id) ? (
                         /* 上传中旋转动画 */
@@ -295,11 +305,15 @@ const Profile: React.FC = () => {
         </div>
       </div>
 
-      <ImageZoom
-        url={zoomUrl || ''}
-        isOpen={!!zoomUrl}
-        onClose={() => setZoomUrl(null)}
-      />
+      {zoomUrl && (
+        <Suspense fallback={null}>
+          <ImageZoom
+            url={zoomUrl}
+            isOpen={!!zoomUrl}
+            onClose={() => setZoomUrl(null)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

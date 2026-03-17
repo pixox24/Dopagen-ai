@@ -2,12 +2,11 @@ import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './layouts/MainLayout';
 import Home from './pages/Home';
-import Profile from './pages/Profile';
 const Login = React.lazy(() => import('./pages/Login'));
-const Explore = React.lazy(() => import('./pages/Explore'));
+const Profile = React.lazy(() => import('./pages/Profile'));
 
 // Admin imports - Lazy loaded for better bundle splitting
-import AdminLayout from './layouts/AdminLayout';
+const AdminLayout = React.lazy(() => import('./layouts/AdminLayout'));
 const Dashboard = React.lazy(() => import('./pages/admin/Dashboard'));
 const ModelList = React.lazy(() => import('./pages/admin/ModelList'));
 const ModelImport = React.lazy(() => import('./pages/admin/ModelImport'));
@@ -33,16 +32,22 @@ const App: React.FC = () => {
             {/* Main App Layout */}
             <Route path="/" element={<Layout />}>
               <Route index element={<Home />} />
-              <Route path="explore" element={
-                <Suspense fallback={<div className="p-8 text-center text-carbon-muted">Loading...</div>}>
-                  <Explore />
+              <Route path="explore" element={<Navigate to="/?section=explore" replace />} />
+              <Route path="profile" element={
+                <Suspense fallback={<div className="p-8 text-center text-carbon-muted">Loading profile...</div>}>
+                  <Profile />
                 </Suspense>
               } />
-              <Route path="profile" element={<Profile />} />
             </Route>
 
             {/* Admin Layout - 独立认证，Lazy Loaded */}
-            <Route path="/admin" element={<AdminAuthProvider><AdminLayout /></AdminAuthProvider>}>
+            <Route path="/admin" element={
+              <AdminAuthProvider>
+                <Suspense fallback={<div className="flex items-center justify-center min-h-screen bg-black text-carbon-muted text-sm">Loading admin...</div>}>
+                  <AdminLayout />
+                </Suspense>
+              </AdminAuthProvider>
+            }>
               <Route index element={<Navigate to="dashboard" replace />} />
               <Route path="dashboard" element={
                 <Suspense fallback={<div className="p-8 text-center">Loading Dashboard...</div>}>

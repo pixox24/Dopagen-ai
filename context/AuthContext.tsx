@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 
 // 统一使用此 User 接口，消除 types.ts 中的重复定义
 export interface User {
@@ -35,7 +35,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id,username,email,avatar_url,role')
         .eq('id', userId)
         .single();
 
@@ -45,7 +45,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: userId,
           username: email.split('@')[0],
           email,
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${email.split('@')[0]}`
+          avatar: ''
         };
       }
 
@@ -53,7 +53,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: data.id,
         username: data.username,
         email: data.email || email,
-        avatar: data.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.username}`,
+        avatar: data.avatar_url || '',
         role: data.role
       };
     } catch (err: unknown) {
@@ -95,24 +95,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     init();
 
     // 监听认证状态变化（修复原死代码：之前因提前 return 而永远不会执行）
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
-        if (!isMountedRef.current) return;
-        setSession(newSession);
-        if (newSession?.user) {
-          const profile = await fetchProfile(newSession.user.id, newSession.user.email || '');
-          if (isMountedRef.current) setUser(profile);
-        } else {
-          setUser(null);
+    let subscription: { unsubscribe: () => void } | undefined;
+
+    if (isMountedRef.current) {
+      const authState = supabase.auth.onAuthStateChange(
+        async (_event, newSession) => {
+          if (!isMountedRef.current) return;
+          setSession(newSession);
+          if (newSession?.user) {
+            const profile = await fetchProfile(newSession.user.id, newSession.user.email || '');
+            if (isMountedRef.current) setUser(profile);
+          } else {
+            setUser(null);
+          }
         }
-      }
-    );
+      );
+
+      subscription = authState.data.subscription;
+    }
 
     // 统一清理：同时清除超时定时器和 Auth 订阅
     return () => {
       isMountedRef.current = false;
       clearTimeout(timeoutId);
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     };
   }, [fetchProfile]);
 

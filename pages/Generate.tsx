@@ -1,17 +1,16 @@
-import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
-import { submitGenerationTask } from '../services/api';
 import { ASPECT_RATIOS, QUALITY_LEVELS, RESOLUTION_MAP } from '../constants';
 import Button from '../components/Button';
-import ImageZoom from '../components/ImageZoom';
 import { GeneratedImage, GenerationTask } from '../types';
+
+const ImageZoom = React.lazy(() => import('../components/ImageZoom'));
 
 // Default Thumbnail for Models
 const DEFAULT_MODEL_THUMB = `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzExMSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjIwIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==`;
 
 const DeleteTaskButton = ({ onDelete }: { onDelete: () => void }) => {
-    // ... (Keep existing implementation)
     const [status, setStatus] = useState<'idle' | 'confirm'>('idle');
     useEffect(() => {
         if (status === 'confirm') {
@@ -108,7 +107,20 @@ const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: 
 
 const Generate: React.FC = () => {
     const { user } = useAuth();
-    const { addUserImage, publishImage, userImages, availableModels, globalApiKey, generationPrompt, setPromptForGeneration } = useApp();
+    const {
+        addUserImage,
+        publishImage,
+        userImages,
+        availableModels,
+        generationPrompt,
+        setPromptForGeneration,
+        tasks,
+        setTasks,
+        activeTaskId,
+        setActiveTaskId,
+        isLoadingTasks: isLoading,
+        deleteTask: deleteTaskFromPolling
+    } = useApp();
 
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [publishingId, setPublishingId] = useState<string | null>(null);
@@ -127,13 +139,6 @@ const Generate: React.FC = () => {
     const [activeBatchIndex, setActiveBatchIndex] = useState<number | null>(null);
 
     // 直接从 AppContext 获取任务状态（原 useTaskPolling Hook 已内联）
-    const {
-        tasks, setTasks,
-        activeTaskId, setActiveTaskId,
-        isLoadingTasks: isLoading,
-        deleteTask: deleteTaskFromPolling
-    } = useApp();
-
     const activeTask = useMemo(() => tasks.find(t => t.id === activeTaskId), [tasks, activeTaskId]);
 
 
@@ -286,6 +291,7 @@ const Generate: React.FC = () => {
         setActiveTaskId(pendingTaskId);
 
         try {
+            const { submitGenerationTask } = await import('../services/api');
             // 2. Submit Task to Backend
             const submitResponse = await submitGenerationTask({
                 model: currentModel,
@@ -293,8 +299,7 @@ const Generate: React.FC = () => {
                 globalWidth: dimensions.w,
                 globalHeight: dimensions.h,
                 globalAspectRatio: aspectRatio,
-                globalQuality: quality,
-                globalApiKey: globalApiKey
+                globalQuality: quality
             });
 
             const { taskId: backendTaskId, imageUrl, status, requestId, submittedParams } = submitResponse;
@@ -331,7 +336,7 @@ const Generate: React.FC = () => {
                 ));
 
                 addUserImage({
-                    id: 'img_' + Date.now(),
+                    id: `img_${backendTaskId}`,
                     url: imageUrl,
                     images: [imageUrl],
                     prompt: promptVal,
@@ -623,7 +628,11 @@ const Generate: React.FC = () => {
                 </div>
             </section>
 
-            <ImageZoom url={zoomUrl || ''} isOpen={!!zoomUrl} onClose={() => setZoomUrl(null)} />
+            {zoomUrl && (
+                <Suspense fallback={null}>
+                    <ImageZoom url={zoomUrl} isOpen={!!zoomUrl} onClose={() => setZoomUrl(null)} />
+                </Suspense>
+            )}
         </div>
     );
 };

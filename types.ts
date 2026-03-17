@@ -153,5 +153,4 @@ export interface GenerateOptions {
   globalHeight: number;
   globalAspectRatio: string;
   globalQuality: string;
-  globalApiKey?: string;
 }

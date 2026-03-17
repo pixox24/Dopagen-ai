@@ -6,7 +6,7 @@
  */
 import imageCompression from 'browser-image-compression';
 import { supabase } from '../lib/supabase';
-import { localImageStore, LocalImage } from '../lib/localImageStore';
+import { localImageStore } from '../lib/localImageStore';
 
 export interface PublishResult {
     success: boolean;
@@ -83,8 +83,6 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
         const isSquare = Math.abs(aspectRatio - 1) < 0.05; // 容差 5% 视为 1:1
         const targetMaxDim = isSquare ? 800 : 1024;
 
-        console.log(`[Publish] 开始压缩图片 ${imageId}，原始大小: ${(localImg.blob.size / 1024).toFixed(1)}KB，比例: ${isSquare ? '1:1' : aspectRatio.toFixed(2)}，目标: ${targetMaxDim}px`);
-
         // 将 Blob 转为 File 对象（browser-image-compression 需要 File 类型）
         const file = new File([localImg.blob], `${imageId}.png`, { type: localImg.blob.type || 'image/png' });
 
@@ -108,16 +106,13 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
             });
         }
 
-        console.log(`[Publish] 压缩完成: ${(compressedFile.size / 1024).toFixed(1)}KB (${((1 - compressedFile.size / file.size) * 100).toFixed(0)}% 压缩率)`);
-
         // ======== 第 3 步：上传到 Supabase Storage ========
         const timestamp = Date.now();
         const filePath = `${userId}/${timestamp}_${imageId}.webp`;
         const remoteImageId = typeof crypto !== 'undefined' && crypto.randomUUID
             ? crypto.randomUUID()
             : `published_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        const uploadBlob = new Blob([await compressedFile.arrayBuffer()], { type: 'image/webp' });
-        const { data: uploadData, error: uploadError } = await uploadWithRetry(filePath, uploadBlob);
+        const { data: uploadData, error: uploadError } = await uploadWithRetry(filePath, compressedFile);
 
         if (uploadError) {
             console.error('[Publish] 上传失败:', uploadError);
@@ -133,8 +128,6 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
         if (!publicUrl) {
             return { success: false, error: '无法获取图片公网 URL' };
         }
-
-        console.log(`[Publish] 上传成功，公网 URL: ${publicUrl}`);
 
         // ======== 第 4 步：写入数据库元数据 ========
         const { error: dbError } = await supabase
@@ -167,7 +160,6 @@ export async function publishImageToGallery(imageId: string, userId: string): Pr
             publicUrl
         });
 
-        console.log(`[Publish] ✅ 图片 ${imageId} 发布成功!`);
         return { success: true, publicUrl, remoteId: remoteImageId };
 
     } catch (err) {

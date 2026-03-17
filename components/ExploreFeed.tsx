@@ -1,9 +1,11 @@
-import React, { useState, useMemo, memo, useEffect, useCallback, useRef } from 'react';
+import React, { Suspense, useState, useMemo, memo, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useApp } from '../context/AppContext';
 import { GeneratedImage } from '../types';
-import ImageDetailModal from './ImageDetailModal';
+import AvatarBadge from './AvatarBadge';
+
+const ImageDetailModal = React.lazy(() => import('./ImageDetailModal'));
 
 interface ExploreFeedProps {
   title?: string;
@@ -13,36 +15,229 @@ interface ExploreFeedProps {
   className?: string;
 }
 
-const FeedItem = memo(function FeedItem({ img, onClick }: { img: GeneratedImage; onClick: (img: GeneratedImage) => void }) {
-  const { username, avatarUrl } = useMemo(() => ({
-    username: img.userId?.split('-')[0] || 'Anon',
-    avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${img.userId}`
-  }), [img.userId]);
+interface PublicFeedRow {
+  id: string;
+  url: string;
+  prompt: string;
+  width: number;
+  height: number;
+  created_at: string;
+  user_id: string;
+  model_name: string;
+}
 
-  const thumbnailUrl = useMemo(() => {
-    if (img.url.includes('supabase.co/storage')) {
-      const separator = img.url.includes('?') ? '&' : '?';
-      return `${img.url}${separator}width=400&quality=75`;
+interface FeedCacheEntry {
+  images: GeneratedImage[];
+  hasMore: boolean;
+  page: number;
+  cachedAt: number;
+}
+
+const FEED_CACHE_TTL_MS = 5 * 60 * 1000;
+const FEED_CACHE_KEY_PREFIX = 'dopagen:public-feed:v1';
+const PUBLIC_FEED_SELECT =
+  'id,url,prompt,width,height,created_at,user_id,model_name';
+const FEED_THUMBNAIL_WIDTHS = [240, 360, 520, 720];
+const FEED_IMAGE_SIZES =
+  '(max-width: 640px) 50vw, (max-width: 1024px) 33vw, (max-width: 1280px) 25vw, 20vw';
+
+const feedMemoryCache = new Map<string, FeedCacheEntry>();
+
+const getFeedCacheKey = (pageSize: number) => `${FEED_CACHE_KEY_PREFIX}:${pageSize}`;
+
+const isFeedCacheFresh = (cache: FeedCacheEntry) => {
+  return Date.now() - cache.cachedAt < FEED_CACHE_TTL_MS;
+};
+
+const mapFeedRows = (rows: PublicFeedRow[]): GeneratedImage[] => {
+  return rows.map((img) => ({
+    id: img.id,
+    remoteId: img.id,
+    publicUrl: img.url,
+    url: img.url,
+    prompt: img.prompt,
+    width: img.width,
+    height: img.height,
+    createdAt: new Date(img.created_at).getTime(),
+    isPublic: true,
+    userId: img.user_id,
+    model: img.model_name,
+  }));
+};
+
+const mergeUniqueImages = (existing: GeneratedImage[], incoming: GeneratedImage[]) => {
+  if (existing.length === 0) {
+    return incoming;
+  }
+
+  const existingIds = new Set(existing.map((img) => img.remoteId || img.id));
+  const uniqueIncoming = incoming.filter((img) => !existingIds.has(img.remoteId || img.id));
+
+  if (uniqueIncoming.length === 0) {
+    return existing;
+  }
+
+  return [...existing, ...uniqueIncoming];
+};
+
+const readFeedCache = (cacheKey: string): FeedCacheEntry | null => {
+  const memoryCache = feedMemoryCache.get(cacheKey);
+  if (memoryCache) {
+    return memoryCache;
+  }
+
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(cacheKey);
+    if (!raw) {
+      return null;
     }
-    return img.url;
+
+    const parsed = JSON.parse(raw) as Partial<FeedCacheEntry>;
+    if (!Array.isArray(parsed.images)) {
+      return null;
+    }
+
+    const cache: FeedCacheEntry = {
+      images: parsed.images as GeneratedImage[],
+      hasMore: typeof parsed.hasMore === 'boolean' ? parsed.hasMore : true,
+      page: typeof parsed.page === 'number' ? parsed.page : 0,
+      cachedAt: typeof parsed.cachedAt === 'number' ? parsed.cachedAt : 0,
+    };
+
+    feedMemoryCache.set(cacheKey, cache);
+    return cache;
+  } catch (error) {
+    window.sessionStorage.removeItem(cacheKey);
+    console.warn('[ExploreFeed] Failed to restore cached feed data.', error);
+    return null;
+  }
+};
+
+const writeFeedCache = (cacheKey: string, cache: FeedCacheEntry) => {
+  feedMemoryCache.set(cacheKey, cache);
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(cacheKey, JSON.stringify(cache));
+  } catch (error) {
+    console.warn('[ExploreFeed] Failed to persist cached feed data.', error);
+  }
+};
+
+const fetchPublicFeedPage = async (pageSize: number, pageNum: number) => {
+  const from = pageNum * pageSize;
+  const to = from + pageSize - 1;
+
+  const { data, error } = await supabase
+    .from('images')
+    .select(PUBLIC_FEED_SELECT)
+    .eq('is_public', true)
+    .order('created_at', { ascending: false })
+    .range(from, to);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = (data || []) as PublicFeedRow[];
+  return {
+    images: mapFeedRows(rows),
+    hasMore: rows.length === pageSize,
+  };
+};
+
+export const warmPublicFeedCache = async (pageSize = 12) => {
+  const cacheKey = getFeedCacheKey(pageSize);
+  const cachedFeed = readFeedCache(cacheKey);
+
+  if (cachedFeed && isFeedCacheFresh(cachedFeed)) {
+    return cachedFeed;
+  }
+
+  const firstPage = await fetchPublicFeedPage(pageSize, 0);
+  const cache: FeedCacheEntry = {
+    images: firstPage.images,
+    hasMore: firstPage.hasMore,
+    page: 0,
+    cachedAt: Date.now(),
+  };
+
+  writeFeedCache(cacheKey, cache);
+  return cache;
+};
+
+const buildThumbnailSource = (url: string) => {
+  if (!url.includes('supabase.co/storage')) {
+    return {
+      src: url,
+      srcSet: undefined as string | undefined,
+      sizes: undefined as string | undefined,
+    };
+  }
+
+  const separator = url.includes('?') ? '&' : '?';
+  const buildVariant = (width: number) => {
+    return `${url}${separator}width=${width}&quality=${width >= 520 ? 72 : 60}`;
+  };
+
+  return {
+    src: buildVariant(360),
+    srcSet: FEED_THUMBNAIL_WIDTHS.map((width) => `${buildVariant(width)} ${width}w`).join(', '),
+    sizes: FEED_IMAGE_SIZES,
+  };
+};
+
+const FeedItem = memo(function FeedItem({
+  img,
+  onClick,
+  priority
+}: {
+  img: GeneratedImage;
+  onClick: (img: GeneratedImage) => void;
+  priority?: boolean;
+}) {
+  const username = useMemo(() => {
+    return img.user?.username || img.userId?.split('-')[0] || 'Anon';
+  }, [img.user?.username, img.userId]);
+
+  const thumbnail = useMemo(() => {
+    return buildThumbnailSource(img.url);
   }, [img.url]);
 
   return (
     <div
       className="break-inside-avoid relative group rounded-xl overflow-hidden cursor-pointer bg-carbon-card content-visibility-item"
       onClick={() => onClick(img)}
+      style={{ aspectRatio: `${img.width} / ${img.height}` }}
     >
       <img
-        src={thumbnailUrl}
+        src={thumbnail.src}
+        srcSet={thumbnail.srcSet}
+        sizes={thumbnail.sizes}
         alt={img.prompt}
-        className="w-full h-auto block transition-transform duration-700 group-hover:scale-105"
-        loading="lazy"
+        className="h-full w-full object-cover block transition-transform duration-700 group-hover:scale-105"
+        loading={priority ? 'eager' : 'lazy'}
+        decoding="async"
+        fetchPriority={priority ? 'high' : 'low'}
       />
 
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-4">
         <div className="flex items-center justify-between translate-y-4 group-hover:translate-y-0 transition-transform duration-300">
           <div className="flex items-center gap-2">
-            <img src={avatarUrl} alt={username} className="w-6 h-6 rounded-full border border-white/20 bg-black/50" />
+            <AvatarBadge
+              name={username}
+              seed={img.userId}
+              src={img.user?.avatar}
+              className="h-6 w-6 border border-white/20 bg-black/50"
+              textClassName="text-[9px]"
+            />
             <span className="text-white text-xs font-medium shadow-black drop-shadow-md">{username}</span>
           </div>
 
@@ -76,73 +271,68 @@ const ExploreFeed: React.FC<ExploreFeedProps> = ({
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(0);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const isLoadingRef = useRef(false);
+  const cacheKey = useMemo(() => getFeedCacheKey(pageSize), [pageSize]);
 
-  const loadPage = useCallback(async (pageNum: number) => {
-    if (isLoading) return;
+  const loadPage = useCallback(async (pageNum: number, options?: { replace?: boolean }) => {
+    if (isLoadingRef.current) {
+      return;
+    }
+
+    isLoadingRef.current = true;
     setIsLoading(true);
 
     try {
-      const from = pageNum * pageSize;
-      const to = from + pageSize - 1;
+      const { images: mappedImages, hasMore: nextHasMore } = await fetchPublicFeedPage(pageSize, pageNum);
 
-      const { data, error } = await supabase
-        .from('images')
-        .select('*')
-        .eq('is_public', true)
-        .order('created_at', { ascending: false })
-        .range(from, to);
+      setImages((prev) => {
+        const nextImages = options?.replace ? mappedImages : mergeUniqueImages(prev, mappedImages);
 
-      if (error) {
-        console.error('Failed to fetch public images:', error);
-        return;
-      }
-
-      if (!data || data.length < pageSize) {
-        setHasMore(false);
-      }
-
-      if (data && data.length > 0) {
-        const newImages: GeneratedImage[] = data.map(img => ({
-          id: img.params?.local_image_id || img.id,
-          remoteId: img.id,
-          publicUrl: img.url,
-          url: img.url,
-          prompt: img.prompt,
-          width: img.width,
-          height: img.height,
-          createdAt: new Date(img.created_at).getTime(),
-          isPublic: true,
-          userId: img.user_id,
-          model: img.model_name,
-          params: img.params,
-        }));
-
-        setImages(prev => {
-          const existingIds = new Set(prev.map(i => i.remoteId || i.id));
-          const unique = newImages.filter(i => !existingIds.has(i.remoteId || i.id));
-          return [...prev, ...unique];
+        writeFeedCache(cacheKey, {
+          images: nextImages,
+          hasMore: nextHasMore,
+          page: pageNum,
+          cachedAt: Date.now(),
         });
-      }
+
+        return nextImages;
+      });
+
+      setHasMore(nextHasMore);
+      setPage(pageNum);
     } catch (err) {
       console.error('Failed to load public gallery:', err);
     } finally {
+      isLoadingRef.current = false;
       setIsLoading(false);
     }
-  }, [isLoading, pageSize]);
+  }, [cacheKey, pageSize]);
 
   useEffect(() => {
-    loadPage(0);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const cachedFeed = readFeedCache(cacheKey);
+
+    if (cachedFeed) {
+      setImages(cachedFeed.images);
+      setHasMore(cachedFeed.hasMore);
+      setPage(cachedFeed.page);
+
+      if (isFeedCacheFresh(cachedFeed)) {
+        return;
+      }
+    }
+
+    void loadPage(0, { replace: true });
+  }, [cacheKey, loadPage]);
 
   useEffect(() => {
-    if (!sentinelRef.current || !hasMore) return;
+    if (!sentinelRef.current || !hasMore) {
+      return;
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isLoading) {
-          const nextPage = page + 1;
-          setPage(nextPage);
-          loadPage(nextPage);
+        if (entries[0].isIntersecting && hasMore) {
+          void loadPage(page + 1);
         }
       },
       { rootMargin: '200px' }
@@ -150,7 +340,7 @@ const ExploreFeed: React.FC<ExploreFeedProps> = ({
 
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [hasMore, isLoading, page, loadPage]);
+  }, [hasMore, page, loadPage]);
 
   return (
     <section className={className}>
@@ -166,11 +356,12 @@ const ExploreFeed: React.FC<ExploreFeedProps> = ({
       )}
 
       <div className="columns-2 md:columns-3 lg:columns-4 xl:columns-5 gap-4 space-y-4 masonry-grid">
-        {images.map((img: GeneratedImage) => (
+        {images.map((img: GeneratedImage, index) => (
           <FeedItem
             key={img.remoteId || img.id}
             img={img}
             onClick={setSelectedImage}
+            priority={index < 6}
           />
         ))}
       </div>
@@ -193,7 +384,7 @@ const ExploreFeed: React.FC<ExploreFeedProps> = ({
 
       {!hasMore && images.length > 0 && (
         <div className="text-center py-8 text-carbon-muted text-xs">
-          - You've reached the end -
+          - You&apos;ve reached the end -
         </div>
       )}
 
@@ -203,18 +394,22 @@ const ExploreFeed: React.FC<ExploreFeedProps> = ({
         </div>
       )}
 
-      <ImageDetailModal
-        image={selectedImage}
-        isOpen={!!selectedImage}
-        onClose={() => setSelectedImage(null)}
-        onRecreate={(e, img) => {
-          if (e) e.stopPropagation();
-          setPromptForGeneration(img.prompt);
-          setSelectedImage(null);
-          navigate('/');
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
-      />
+      {selectedImage && (
+        <Suspense fallback={null}>
+          <ImageDetailModal
+            image={selectedImage}
+            isOpen={!!selectedImage}
+            onClose={() => setSelectedImage(null)}
+            onRecreate={(e, img) => {
+              if (e) e.stopPropagation();
+              setPromptForGeneration(img.prompt);
+              setSelectedImage(null);
+              navigate('/');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        </Suspense>
+      )}
     </section>
   );
 };

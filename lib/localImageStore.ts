@@ -22,6 +22,34 @@ const store = localforage.createInstance({
     storeName: 'images'
 });
 
+const objectUrlCache = new Map<string, string>();
+
+const revokeCachedObjectUrl = (id: string) => {
+    const objectUrl = objectUrlCache.get(id);
+    if (!objectUrl) {
+        return;
+    }
+
+    URL.revokeObjectURL(objectUrl);
+    objectUrlCache.delete(id);
+};
+
+const resolveImageUrl = (image: Pick<LocalImage, 'id' | 'blob' | 'status' | 'publicUrl'>) => {
+    if (image.status === 'published' && image.publicUrl) {
+        revokeCachedObjectUrl(image.id);
+        return image.publicUrl;
+    }
+
+    const cached = objectUrlCache.get(image.id);
+    if (cached) {
+        return cached;
+    }
+
+    const objectUrl = URL.createObjectURL(image.blob);
+    objectUrlCache.set(image.id, objectUrl);
+    return objectUrl;
+};
+
 export const localImageStore = {
     /**
      * Save a new image as draft
@@ -37,7 +65,7 @@ export const localImageStore = {
         // Generate URL for immediate use
         return {
             ...newImage,
-            url: URL.createObjectURL(newImage.blob)
+            url: resolveImageUrl(newImage)
         };
     },
 
@@ -47,12 +75,10 @@ export const localImageStore = {
     async getAllImages(): Promise<LocalImage[]> {
         const images: LocalImage[] = [];
         await store.iterate((value: LocalImage) => {
-            if (value.blob) {
-                value.url = value.status === 'published' && value.publicUrl
-                    ? value.publicUrl
-                    : URL.createObjectURL(value.blob);
-            }
-            images.push(value);
+            images.push({
+                ...value,
+                url: value.blob ? resolveImageUrl(value) : value.url
+            });
         });
         return images.sort((a, b) => b.createdAt - a.createdAt);
     },
@@ -63,9 +89,10 @@ export const localImageStore = {
     async getImageById(id: string): Promise<LocalImage | null> {
         const image = await store.getItem<LocalImage>(id);
         if (image && image.blob) {
-            image.url = image.status === 'published' && image.publicUrl
-                ? image.publicUrl
-                : URL.createObjectURL(image.blob);
+            return {
+                ...image,
+                url: resolveImageUrl(image)
+            };
         }
         return image;
     },
@@ -79,6 +106,7 @@ export const localImageStore = {
             image.status = 'published';
             if (metadata?.remoteId) image.remoteId = metadata.remoteId;
             if (metadata?.publicUrl) image.publicUrl = metadata.publicUrl;
+            revokeCachedObjectUrl(id);
             await store.setItem(id, image);
         }
     },
@@ -87,6 +115,7 @@ export const localImageStore = {
      * Delete an image
      */
     async deleteImage(id: string): Promise<void> {
+        revokeCachedObjectUrl(id);
         await store.removeItem(id);
     },
 
@@ -120,11 +149,8 @@ export const localImageStore = {
             });
 
             for (const key of keysToDelete) {
+                revokeCachedObjectUrl(key);
                 await store.removeItem(key);
-            }
-
-            if (keysToDelete.length > 0) {
-                console.log(`[LocalImageStore] Cleaned up ${keysToDelete.length} old draft images.`);
             }
         } catch (err) {
             console.error('[LocalImageStore] Failed to cleanup old drafts:', err);

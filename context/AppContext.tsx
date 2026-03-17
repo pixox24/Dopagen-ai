@@ -1,17 +1,13 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
-import { GeneratedImage, Model, GenerationTask } from '../types';
-import { pollTaskStatus } from '../services/api';
-import { publicApi } from '../services/adminApi';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { GeneratedImage, GenerationTask, Model } from '../types';
 import { MODELS as DEFAULT_MODELS } from '../constants';
-import { supabase } from '../lib/supabase';
-import { localImageStore } from '../lib/localImageStore';
 import { useAuth } from './AuthContext';
+import { supabase } from '../lib/supabase';
 
 interface AppContextType {
   userImages: GeneratedImage[];
   availableModels: Model[];
   allModels: Model[];
-  isLoadingData: boolean;
   addUserImage: (img: GeneratedImage) => void;
   deleteUserImage: (id: string) => void;
   publishImage: (id: string) => void;
@@ -21,104 +17,88 @@ interface AppContextType {
   toggleModelVisibility: (id: string) => void;
   setPromptForGeneration: (prompt: string) => void;
   generationPrompt: string;
-  globalApiKey: string;
-  setGlobalApiKey: (key: string) => void;
-  loadingMessages: string[];
-  setLoadingMessages: (msgs: string[]) => void;
   refreshImages: () => Promise<void>;
-  // 任务管理
   tasks: GenerationTask[];
   setTasks: React.Dispatch<React.SetStateAction<GenerationTask[]>>;
   activeTaskId: string | null;
   setActiveTaskId: (id: string | null) => void;
   isLoadingTasks: boolean;
   deleteTask: (id: string) => void;
-  // 发布限制
   dailyPublishLimit: number;
   getTodayPublishCount: () => number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const FALLBACK_LOADING_MESSAGES = [
-  "INITIALIZING NEURAL PATHWAYS",
-  "INJECTING DOPAMINE",
-  "ALIGNING TENSORS",
-  "SYNTHESIZING DREAMS",
-  "DECODING MATRIX",
-  "RENDERING REALITY"
-];
+const getGeneratedImageDedupKey = (img: Pick<GeneratedImage, 'id' | 'images' | 'publicUrl'>) => {
+  return img.publicUrl || img.images?.[0] || img.id;
+};
+
+const loadPublicApi = async () => {
+  const module = await import('../services/publicApi');
+  return module.publicApi;
+};
+
+const loadLocalImageStore = async () => {
+  const module = await import('../lib/localImageStore');
+  return module.localImageStore;
+};
+
+type IdleCallbackHandle = number;
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, session } = useAuth();
 
   const [userImages, setUserImages] = useState<GeneratedImage[]>([]);
   const [generationPrompt, setGenerationPrompt] = useState('');
-  const [isLoadingData, setIsLoadingData] = useState(false);
-
   const [customModels, setCustomModels] = useState<Model[]>([]);
   const [hiddenModelIds, setHiddenModelIds] = useState<string[]>([]);
   const [globalModels, setGlobalModels] = useState<Model[]>([]);
-
-  // API Key 使用 sessionStorage 替代 localStorage，减少 XSS 窃取风险
-  // sessionStorage 在标签页关闭时自动清除
-  const [globalApiKey, setGlobalApiKeyState] = useState<string>(() => {
-    return sessionStorage.getItem('dopa_global_api_key') || '';
-  });
-
-  const [loadingMessages, setLoadingMessagesState] = useState<string[]>(FALLBACK_LOADING_MESSAGES);
-
-  // 任务管理状态 (全局持久)
   const [tasks, setTasks] = useState<GenerationTask[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const pollingAttempts = React.useRef<Record<string, number>>({});
 
-  // ============================================
-  // 从后端 API + Supabase 加载数据
-  // ============================================
+  const pollingAttempts = useRef<Record<string, number>>({});
+  const pollingInFlightRef = useRef<Set<string>>(new Set());
+  const completedTaskIdsRef = useRef<Set<string>>(new Set());
+  const runningTaskIdsRef = useRef<Set<string>>(new Set());
+  const tasksRef = useRef<GenerationTask[]>([]);
 
-  // 从 Supabase 获取管理员配置的全局模型（user_id IS NULL）
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
+
   const fetchGlobalModels = useCallback(async () => {
     try {
+      const publicApi = await loadPublicApi();
       const data = await publicApi.getPublicModels();
-      setGlobalModels((data || []).map((m: any) => ({
-        id: m.id,
-        name: m.name,
-        version: m.version || '1.0',
-        description: m.description || '',
+
+      setGlobalModels((data || []).map((model: any) => ({
+        id: model.id,
+        name: model.name,
+        version: model.version || '1.0',
+        description: model.description || '',
         isCustom: true,
-        web_app_id: m.web_app_id,
-        schema: m.schema,
-        input_map: m.input_map,
-        thumbnail: m.thumbnail_url,
-        hidden: m.is_hidden,
-        api_key: m.api_key,
+        web_app_id: model.web_app_id,
+        schema: model.schema,
+        input_map: model.input_map,
+        thumbnail: model.thumbnail_url,
+        hidden: model.is_hidden,
+        api_key: model.api_key,
       })));
     } catch {
-      // Supabase 不可用时静默降级
-    }
-  }, []);
-
-  // 从 Supabase 获取管理员配置的加载消息
-  const fetchLoadingMessages = useCallback(async () => {
-    try {
-      const data = await publicApi.getPublicSettings();
-      if (data.loadingMessages?.length) {
-        setLoadingMessagesState(data.loadingMessages);
-      }
-    } catch {
-      // Supabase 不可用时使用默认值
+      // Silently fall back to bundled models when public model loading fails.
     }
   }, []);
 
   const fetchUserImages = useCallback(async () => {
     try {
-      // 从 IndexedDB 获取图片
+      const localImageStore = await loadLocalImageStore();
       const dbImages = await localImageStore.getAllImages();
-      setUserImages(dbImages.map(img => ({
+
+      setUserImages(dbImages.map((img) => ({
         id: img.id,
         url: img.url,
-        images: [img.url], // 如果有 batch 的情况视需求填充
+        images: [img.url],
         remoteId: img.remoteId,
         publicUrl: img.publicUrl,
         prompt: img.prompt,
@@ -131,326 +111,426 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         modelId: img.modelId,
         params: img.params,
       })));
-    } catch (err: unknown) {
-      console.error('Failed to fetch user images from local DB:', err);
+    } catch (error) {
+      console.error('Failed to fetch user images from local DB:', error);
     }
   }, [user]);
 
-
-
   const fetchCustomModels = useCallback(async () => {
-    if (!user || !session) return;
+    if (!user || !session) {
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from('custom_models')
-        .select('*')
+        .select('id,name,version,description,web_app_id,schema,input_map,thumbnail_url,is_hidden,api_key,created_at')
         .eq('user_id', user.id);
 
-      if (!error && data) {
-        const sortedData = [...data].sort((a, b) => {
-          const left = a.created_at ? Date.parse(a.created_at) : 0;
-          const right = b.created_at ? Date.parse(b.created_at) : 0;
-          return right - left;
-        });
-
-        setCustomModels(sortedData.map(m => ({
-          id: m.id,
-          name: m.name,
-          version: m.version || '1.0',
-          description: m.description || '',
-          isCustom: true,
-          web_app_id: m.web_app_id,
-          schema: m.schema,
-          input_map: m.input_map,
-          thumbnail: m.thumbnail_url,
-          hidden: m.is_hidden,
-          api_key: m.api_key
-        })));
-        setHiddenModelIds(data.filter(m => m.is_hidden).map(m => m.id));
+      if (error || !data) {
+        return;
       }
-    } catch (err: unknown) {
-      console.error('Failed to fetch custom models:', err);
+
+      const sortedData = [...data].sort((left, right) => {
+        const leftTime = left.created_at ? Date.parse(left.created_at) : 0;
+        const rightTime = right.created_at ? Date.parse(right.created_at) : 0;
+        return rightTime - leftTime;
+      });
+
+      setCustomModels(sortedData.map((model) => ({
+        id: model.id,
+        name: model.name,
+        version: model.version || '1.0',
+        description: model.description || '',
+        isCustom: true,
+        web_app_id: model.web_app_id,
+        schema: model.schema,
+        input_map: model.input_map,
+        thumbnail: model.thumbnail_url,
+        hidden: model.is_hidden,
+        api_key: model.api_key,
+      })));
+      setHiddenModelIds(data.filter((model) => model.is_hidden).map((model) => model.id));
+    } catch (error) {
+      console.error('Failed to fetch custom models:', error);
     }
-  }, [user, session]);
+  }, [session, user]);
 
-  // 初始加载
   useEffect(() => {
-    const loadData = async () => {
-      setIsLoadingData(true);
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let idleId: IdleCallbackHandle | undefined;
 
-      // 初始化时自动清理过期草稿
-      await localImageStore.cleanupOldDrafts();
+    const hydrateLocalImages = async () => {
+      try {
+        const localImageStore = await loadLocalImageStore();
+        await localImageStore.cleanupOldDrafts();
 
-      await Promise.all([
-        fetchUserImages(),
-        fetchCustomModels(),
-        fetchGlobalModels(),
-        fetchLoadingMessages(),
-      ]);
-      setIsLoadingData(false);
+        if (!cancelled) {
+          await fetchUserImages();
+        }
+      } catch (error) {
+        console.error('Failed to hydrate local images:', error);
+      }
     };
 
-    if (user && session) {
-      loadData();
-    } else {
-      // 未登录时只加载公开配置，不全量拉取图片
-      Promise.all([fetchGlobalModels(), fetchLoadingMessages()]);
-      setUserImages([]);
-      setCustomModels([]);
-    }
-  }, [user, session, fetchUserImages, fetchCustomModels, fetchGlobalModels, fetchLoadingMessages]);
+    const scheduleLocalImageHydration = () => {
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        idleId = window.requestIdleCallback(() => {
+          void hydrateLocalImages();
+        }, { timeout: 1500 });
+        return;
+      }
 
-  /**
-   * 任务轮询逻辑 - 全局运行 (性能优化版)
-   */
-  // 使用 ref 跟踪当前轮询的任务 ID，避免在 Effect 内部读取 tasks 导致循环触发
-  const runningTaskIdsRef = React.useRef<Set<string>>(new Set());
+      timeoutId = setTimeout(() => {
+        void hydrateLocalImages();
+      }, 300);
+    };
+
+    const loadData = async () => {
+      if (!user || !session) {
+        await fetchGlobalModels();
+
+        if (!cancelled) {
+          setUserImages([]);
+          setCustomModels([]);
+          setHiddenModelIds([]);
+        }
+        return;
+      }
+
+      await Promise.all([
+        fetchCustomModels(),
+        fetchGlobalModels(),
+      ]);
+
+      if (!cancelled) {
+        scheduleLocalImageHydration();
+      }
+    };
+
+    void loadData();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (idleId !== undefined && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [fetchCustomModels, fetchGlobalModels, fetchUserImages, session, user]);
 
   useEffect(() => {
-    // 找出所有运行中且有后端 ID 的任务
     const currentRunning = tasks
-      .filter(t => (t.status === 'processing' || t.status === 'queued') && !t.id.startsWith('pending_'))
-      .map(t => t.id);
+      .filter((task) => (task.status === 'processing' || task.status === 'queued') && !task.id.startsWith('pending_'))
+      .map((task) => task.id);
 
     const currentSet = new Set(currentRunning);
-
-    // 如果运行中的任务集合没有变化，不重新启动定时器
     const hasChanged = currentRunning.length !== runningTaskIdsRef.current.size ||
-      currentRunning.some(id => !runningTaskIdsRef.current.has(id));
+      currentRunning.some((taskId) => !runningTaskIdsRef.current.has(taskId));
 
-    if (!hasChanged) return;
+    if (!hasChanged) {
+      return;
+    }
 
     runningTaskIdsRef.current = currentSet;
-    if (currentRunning.length === 0) return;
+    if (currentRunning.length === 0) {
+      return;
+    }
 
     const intervalId = setInterval(async () => {
-      // 内部通过 ref 获取最新的 ID 集合
       const idsToPoll = Array.from(runningTaskIdsRef.current);
 
       for (const taskId of idsToPoll) {
+        if (pollingInFlightRef.current.has(taskId) || completedTaskIdsRef.current.has(taskId)) {
+          continue;
+        }
+
+        const currentTask = tasksRef.current.find((task) => task.id === taskId);
+        if (!currentTask) {
+          runningTaskIdsRef.current.delete(taskId);
+          delete pollingAttempts.current[taskId];
+          continue;
+        }
+
+        if (currentTask.status !== 'processing' && currentTask.status !== 'queued') {
+          runningTaskIdsRef.current.delete(taskId);
+          delete pollingAttempts.current[taskId];
+          continue;
+        }
+
+        if (!currentTask.requestId) {
+          continue;
+        }
+
+        pollingInFlightRef.current.add(taskId);
         pollingAttempts.current[taskId] = (pollingAttempts.current[taskId] || 0) + 1;
 
         try {
-          const currentTask = tasks.find(t => t.id === taskId);
-          if (!currentTask?.requestId) {
-            continue;
-          }
-
+          const { pollTaskStatus } = await import('../services/api');
           const statusData = await pollTaskStatus(
             currentTask.requestId,
             {
               modelId: currentTask.modelId,
               prompt: currentTask.prompt,
-              params: currentTask.params
+              params: currentTask.params,
+              userId: user?.id || null,
             },
             currentTask.id
           );
 
           if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
+            completedTaskIdsRef.current.add(taskId);
+            runningTaskIdsRef.current.delete(taskId);
+
             const completedAt = Date.now();
             const imageUrl = statusData.resultUrl;
             const images = statusData.images?.length ? statusData.images : [imageUrl];
 
-            // 获取到 URL 后先通知状态变成 Completed
-            setTasks(prev => {
-              const task = prev.find(t => t.id === taskId);
-              if (!task) return prev;
+            setTasks((prev) => {
+              const task = prev.find((item) => item.id === taskId);
+              if (!task) {
+                return prev;
+              }
+
               const duration = task.startedAt ? Math.floor((completedAt - task.startedAt) / 1000) : 0;
-              return prev.map(t => t.id === taskId ? {
-                ...t,
+
+              return prev.map((item) => item.id === taskId ? {
+                ...item,
                 status: 'completed',
                 imageUrl,
                 images,
                 completedAt,
-                duration
-              } : t);
+                duration,
+              } : item);
             });
             delete pollingAttempts.current[taskId];
 
             const duration = currentTask.startedAt ? Math.floor((completedAt - currentTask.startedAt) / 1000) : 0;
 
-            // 异步下载并保存图片到 IndexedDB
-            fetch(imageUrl)
-              .then(res => res.blob())
-              .then(blob => {
-                return localImageStore.saveImage({
-                  id: 'img_' + Date.now(),
-                  blob,
-                  prompt: currentTask.prompt,
-                  model: currentTask.modelName,
-                  modelId: currentTask.modelId,
-                  width: currentTask.width,
-                  height: currentTask.height,
-                  createdAt: Date.now(),
-                  params: currentTask.params || {}
-                });
-              })
-              .then(localImg => {
-                // 乐观更新到本地状态
-                addUserImage({
-                  id: localImg.id,
-                  url: localImg.url,
-                  images,
-                  prompt: localImg.prompt,
-                  width: localImg.width,
-                  height: localImg.height,
-                  createdAt: localImg.createdAt,
-                  isPublic: false,
-                  userId: user?.id || 'anon',
-                  model: localImg.model,
-                  modelId: localImg.modelId,
-                  params: currentTask.params,
-                  duration
-                });
-              })
-              .catch(err => console.error("Failed to save generated image to IndexedDB", err));
+            void persistGeneratedImage({
+              taskId,
+              imageUrl,
+              images,
+              prompt: currentTask.prompt,
+              modelName: currentTask.modelName,
+              modelId: currentTask.modelId,
+              width: currentTask.width,
+              height: currentTask.height,
+              params: currentTask.params,
+              duration,
+            }).catch((error) => console.error('Failed to save generated image to IndexedDB', error));
           } else if (statusData.status === 'FAILED' || statusData.status === 'CANCELLED') {
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: statusData.error } : t));
+            runningTaskIdsRef.current.delete(taskId);
+            setTasks((prev) => prev.map((task) => task.id === taskId ? {
+              ...task,
+              status: 'failed',
+              error: statusData.error,
+            } : task));
             delete pollingAttempts.current[taskId];
-          } else if (pollingAttempts.current[taskId] > 40) { // 提高超时容忍度到 120s
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed', error: 'Generation timeout' } : t));
+          } else if (pollingAttempts.current[taskId] > 40) {
+            runningTaskIdsRef.current.delete(taskId);
+            setTasks((prev) => prev.map((task) => task.id === taskId ? {
+              ...task,
+              status: 'failed',
+              error: 'Generation timeout',
+            } : task));
             delete pollingAttempts.current[taskId];
           }
-        } catch (e) {
-          console.error("Polling error for " + taskId, e);
+        } catch (error) {
+          console.error(`Polling error for ${taskId}`, error);
+        } finally {
+          pollingInFlightRef.current.delete(taskId);
         }
       }
-    }, 4000); // 稍微调低频率减少压力
+    }, 4000);
 
     return () => clearInterval(intervalId);
-  }, [tasks, user]); // 虽然依赖 tasks，但内部通过 Ref 比较集合变化来决定是否重启定时器
+  }, [tasks, user]);
 
   const deleteTask = useCallback((id: string) => {
-    setTasks(prev => prev.filter(t => t.id !== id));
-    setActiveTaskId(prev => prev === id ? null : prev);
-    if (pollingAttempts.current[id]) delete pollingAttempts.current[id];
+    setTasks((prev) => prev.filter((task) => task.id !== id));
+    setActiveTaskId((prev) => prev === id ? null : prev);
+    delete pollingAttempts.current[id];
+    runningTaskIdsRef.current.delete(id);
+    pollingInFlightRef.current.delete(id);
+    completedTaskIdsRef.current.delete(id);
   }, []);
 
-  const activeTask = useMemo(() => tasks.find(t => t.id === activeTaskId), [tasks, activeTaskId]);
-  const isLoadingTasks = useMemo(() => activeTask?.status === 'processing' || activeTask?.status === 'queued', [activeTask]);
-
-  // ============================================
-  // 数据操作方法
-  // ============================================
-
-  // loading messages 现在由后端管理，不再 localStorage 持久化
-
-  const setGlobalApiKey = (key: string) => {
-    setGlobalApiKeyState(key);
-    // 使用 sessionStorage 存储 API Key，比 localStorage 更安全
-    // sessionStorage 仅在当前标签页可用，关闭后自动清除
-    sessionStorage.setItem('dopa_global_api_key', key);
-  };
-
-  const setLoadingMessages = (msgs: string[]) => {
-    setLoadingMessagesState(msgs);
-  };
+  const activeTask = useMemo(() => tasks.find((task) => task.id === activeTaskId), [activeTaskId, tasks]);
+  const isLoadingTasks = useMemo(() => {
+    return activeTask?.status === 'processing' || activeTask?.status === 'queued';
+  }, [activeTask]);
 
   const refreshImages = async () => {
     await fetchUserImages();
   };
 
-  const addUserImage = (img: GeneratedImage) => {
-    // 乐观更新：先添加到本地，后端已在任务完成时自动保存
-    setUserImages(prev => [img, ...prev]);
-  };
+  const addUserImage = useCallback((img: GeneratedImage) => {
+    setUserImages((prev) => {
+      const incomingKey = getGeneratedImageDedupKey(img);
+      const existingIndex = prev.findIndex((existing) =>
+        existing.id === img.id || getGeneratedImageDedupKey(existing) === incomingKey
+      );
+
+      if (existingIndex === -1) {
+        return [img, ...prev];
+      }
+
+      const next = [...prev];
+      next[existingIndex] = { ...next[existingIndex], ...img };
+
+      if (existingIndex === 0) {
+        return next;
+      }
+
+      const [existingImage] = next.splice(existingIndex, 1);
+      return [existingImage, ...next];
+    });
+  }, []);
+
+  const persistGeneratedImage = useCallback(async ({
+    taskId,
+    imageUrl,
+    images,
+    prompt,
+    modelName,
+    modelId,
+    width,
+    height,
+    params,
+    duration,
+  }: {
+    taskId: string;
+    imageUrl: string;
+    images?: string[];
+    prompt: string;
+    modelName: string;
+    modelId?: string;
+    width: number;
+    height: number;
+    params?: GenerationTask['params'];
+    duration?: number;
+  }) => {
+    const localImageStore = await loadLocalImageStore();
+    const response = await fetch(imageUrl);
+    const blob = await response.blob();
+    const createdAt = Date.now();
+
+    const localImg = await localImageStore.saveImage({
+      id: `img_${taskId}`,
+      blob,
+      prompt,
+      model: modelName,
+      modelId,
+      width,
+      height,
+      createdAt,
+      params: params || {},
+    });
+
+    addUserImage({
+      id: localImg.id,
+      url: localImg.url,
+      images: images?.length ? images : [imageUrl],
+      prompt: localImg.prompt,
+      width: localImg.width,
+      height: localImg.height,
+      createdAt: localImg.createdAt,
+      isPublic: false,
+      userId: user?.id || 'anon',
+      model: localImg.model,
+      modelId: localImg.modelId,
+      params,
+      duration,
+    });
+  }, [addUserImage, user]);
 
   const deleteUserImage = async (id: string) => {
-    const img = userImages.find(i => i.id === id);
-    if (!img) return;
+    const image = userImages.find((item) => item.id === id);
+    if (!image) {
+      return;
+    }
 
-    // 保留旧数据用于回滚
     const previousUserImages = userImages;
+    setUserImages((prev) => prev.filter((item) => item.id !== id));
 
-    // 乐观更新
-    setUserImages(prev => prev.filter(img => img.id !== id));
-
-    // 先从本地 IndexedDB 中删除
+    const localImageStore = await loadLocalImageStore();
     await localImageStore.deleteImage(id).catch(console.error);
 
-    // 如果图片已经发布，还要同步删除云端记录
-    if (session && img.isPublic) {
+    if (session && image.isPublic) {
       let error = null;
 
-      if (img.remoteId) {
-        const result = await supabase.from('images').delete().eq('id', img.remoteId);
+      if (image.remoteId) {
+        const result = await supabase.from('images').delete().eq('id', image.remoteId);
         error = result.error;
-      } else if (user?.id && img.publicUrl) {
-        const result = await supabase.from('images').delete().eq('user_id', user.id).eq('url', img.publicUrl);
+      } else if (user?.id && image.publicUrl) {
+        const result = await supabase.from('images').delete().eq('user_id', user.id).eq('url', image.publicUrl);
         error = result.error;
       }
 
       if (error) {
         console.error('Failed to delete image from Supabase:', error);
-        // 是否回滚视需求而定，因为本地已经被删掉了，一般不推荐给用户跳回去
         setUserImages(previousUserImages);
       }
     }
   };
 
-  // 每日发布上限
   const DAILY_PUBLISH_LIMIT = 50;
 
-  // 计算今日已发布数量（供 UI 层使用）
   const getTodayPublishCount = useCallback(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayStart = today.getTime();
-    return userImages.filter(img => img.isPublic && img.createdAt >= todayStart).length;
+    return userImages.filter((image) => image.isPublic && image.createdAt >= todayStart).length;
   }, [userImages]);
 
   const publishImage = async (id: string) => {
-    const img = userImages.find(i => i.id === id);
-    if (!img || img.isPublic) return; // 已发布的不重复
-    if (!user) return;
+    const image = userImages.find((item) => item.id === id);
+    if (!image || image.isPublic || !user) {
+      return;
+    }
 
-    // 每日发布上限检查
     const todayCount = getTodayPublishCount();
     if (todayCount >= DAILY_PUBLISH_LIMIT) {
       alert(`今日发布已达上限（${DAILY_PUBLISH_LIMIT}张/天），请明天再来 🎨`);
       return;
     }
 
-    // 保留旧数据用于回滚
     const previousUserImages = userImages;
-
-    // 乐观更新 UI：立即标记为已发布状态
-    const updatedImg = { ...img, isPublic: true };
-    setUserImages(prev => prev.map(i => i.id === id ? updatedImg : i));
+    setUserImages((prev) => prev.map((item) => item.id === id ? { ...item, isPublic: true } : item));
 
     try {
-      // 调用发布服务：压缩 → 上传 Storage → 写入数据库 → 更新 IndexedDB
       const { publishImageToGallery } = await import('../services/publishService');
       const result = await publishImageToGallery(id, user.id);
 
       if (!result.success) {
-        // 发布失败：回滚 UI
-        console.error('发布失败:', result.error);
+        console.error('Publish failed:', result.error);
         setUserImages(previousUserImages);
         alert(`发布失败: ${result.error}`);
-      } else {
-        setUserImages(prev => prev.map(i => i.id === id ? {
-          ...i,
-          isPublic: true,
-          remoteId: result.remoteId || i.remoteId,
-          publicUrl: result.publicUrl || i.publicUrl,
-          url: result.publicUrl || i.url,
-          images: result.publicUrl ? [result.publicUrl] : i.images
-        } : i));
+        return;
       }
-      // 成功时无需额外操作，乐观更新已经生效
-    } catch (err) {
-      console.error('发布异常:', err);
+
+      setUserImages((prev) => prev.map((item) => item.id === id ? {
+        ...item,
+        isPublic: true,
+        remoteId: result.remoteId || item.remoteId,
+        publicUrl: result.publicUrl || item.publicUrl,
+        url: result.publicUrl || item.url,
+        images: result.publicUrl ? [result.publicUrl] : item.images,
+      } : item));
+    } catch (error) {
+      console.error('Publish exception:', error);
       setUserImages(previousUserImages);
       alert('发布过程发生错误，请重试');
     }
   };
 
   const addCustomModel = async (model: Model) => {
-    // 乐观更新
-    setCustomModels(prev => [...prev, model]);
+    setCustomModels((prev) => [...prev, model]);
 
-    // 同步到 Supabase
     if (session && user) {
       const { data, error } = await supabase
         .from('custom_models')
@@ -463,31 +543,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           schema: model.schema,
           input_map: model.input_map,
           thumbnail_url: model.thumbnail,
-          api_key: model.api_key
+          api_key: model.api_key,
         })
         .select()
         .single();
 
       if (error) {
-        // 失败时回滚
         console.error('Failed to add custom model:', error);
-        setCustomModels(prev => prev.filter(m => m.id !== model.id));
+        setCustomModels((prev) => prev.filter((item) => item.id !== model.id));
       } else if (data) {
-        // 用服务端生成的 ID 替换本地 ID
-        setCustomModels(prev => prev.map(m =>
-          m.id === model.id ? { ...m, id: data.id } : m
-        ));
+        setCustomModels((prev) => prev.map((item) => item.id === model.id ? { ...item, id: data.id } : item));
       }
     }
   };
 
   const updateCustomModel = async (id: string, updates: Partial<Model>) => {
-    // 保留旧数据用于回滚
     const previousModels = customModels;
-    setCustomModels(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
+    setCustomModels((prev) => prev.map((model) => model.id === id ? { ...model, ...updates } : model));
 
     if (session) {
       const dbUpdates: Record<string, string | boolean | number | null | undefined> = {};
+
       if (updates.name !== undefined) dbUpdates.name = updates.name;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
       if (updates.schema !== undefined) dbUpdates.schema = updates.schema as unknown as string;
@@ -503,12 +579,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteCustomModel = async (id: string) => {
-    // 保留旧数据用于回滚
     const previousModels = customModels;
     const previousHidden = hiddenModelIds;
 
-    setCustomModels(prev => prev.filter(m => m.id !== id));
-    setHiddenModelIds(prev => prev.filter(hid => hid !== id));
+    setCustomModels((prev) => prev.filter((model) => model.id !== id));
+    setHiddenModelIds((prev) => prev.filter((hiddenId) => hiddenId !== id));
 
     if (session) {
       const { error } = await supabase.from('custom_models').delete().eq('id', id);
@@ -524,15 +599,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const isCurrentlyHidden = hiddenModelIds.includes(id);
     const previousHidden = hiddenModelIds;
 
-    setHiddenModelIds(prev =>
-      isCurrentlyHidden ? prev.filter(hid => hid !== id) : [...prev, id]
-    );
+    setHiddenModelIds((prev) => isCurrentlyHidden ? prev.filter((hiddenId) => hiddenId !== id) : [...prev, id]);
 
     if (session) {
       const { error } = await supabase
         .from('custom_models')
         .update({ is_hidden: !isCurrentlyHidden })
         .eq('id', id);
+
       if (error) {
         console.error('Failed to toggle model visibility:', error);
         setHiddenModelIds(previousHidden);
@@ -540,39 +614,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // ============================================
-  // 计算派生状态
-  // ============================================
-
-  // 合并模型：内置 + 全局（管理员上传）+ 用户自定义
   const allModels = useMemo(() => {
     const modelMap = new Map<string, Model>();
 
-    // 1. 先放入内置模型
-    DEFAULT_MODELS.forEach(m => modelMap.set(m.id, m));
+    DEFAULT_MODELS.forEach((model) => modelMap.set(model.id, model));
+    globalModels.forEach((model) => modelMap.set(model.id, model));
+    customModels.forEach((model) => modelMap.set(model.id, model));
 
-    // 2. 放入全局模型（覆盖可能存在的同 ID 内置模型）
-    globalModels.forEach(m => modelMap.set(m.id, m));
-
-    // 3. 放入用户自定义模型（覆盖同 ID）
-    customModels.forEach(m => modelMap.set(m.id, m));
-
-    return Array.from(modelMap.values()).map(m => ({
-      ...m,
-      hidden: hiddenModelIds.includes(m.id)
+    return Array.from(modelMap.values()).map((model) => ({
+      ...model,
+      hidden: hiddenModelIds.includes(model.id),
     }));
-  }, [globalModels, customModels, hiddenModelIds]);
+  }, [customModels, globalModels, hiddenModelIds]);
 
-  const availableModels = useMemo(() => {
-    return allModels.filter(m => !m.hidden);
-  }, [allModels]);
+  const availableModels = useMemo(() => allModels.filter((model) => !model.hidden), [allModels]);
 
   return (
     <AppContext.Provider value={{
       userImages,
       availableModels,
       allModels,
-      isLoadingData,
       addUserImage,
       deleteUserImage,
       publishImage,
@@ -584,17 +645,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toggleModelVisibility,
       setPromptForGeneration: setGenerationPrompt,
       generationPrompt,
-      globalApiKey,
-      setGlobalApiKey,
-      loadingMessages,
-      setLoadingMessages,
       refreshImages,
       tasks,
       setTasks,
       activeTaskId,
       setActiveTaskId,
       isLoadingTasks,
-      deleteTask
+      deleteTask,
     }}>
       {children}
     </AppContext.Provider>

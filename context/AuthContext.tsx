@@ -1,8 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { clearSupabaseAuthStorage, supabase } from '../lib/supabase';
 
-// 统一使用此 User 接口，消除 types.ts 中的重复定义
 export interface User {
   id: string;
   username: string;
@@ -23,67 +22,138 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const SESSION_RECOVERY_TIMEOUT_MS = 6000;
+const PROFILE_TIMEOUT_MS = 8000;
+const AUTH_ACTION_TIMEOUT_MS = 15000;
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  // 使用 ref 追踪组件挂载状态，防止内存泄漏
   const isMountedRef = useRef(true);
 
-  // 获取用户 profile 信息
-  const fetchProfile = useCallback(async (userId: string, email: string): Promise<User | null> => {
+  const buildFallbackUser = useCallback((userId: string, email: string, username?: string | null): User => ({
+    id: userId,
+    username: username?.trim() || email.split('@')[0] || 'User',
+    email,
+    avatar: ''
+  }), []);
+
+  const fetchProfile = useCallback(async (userId: string, email: string): Promise<User> => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id,username,email,avatar_url,role')
-        .eq('id', userId)
-        .single();
+      const { data, error } = await withTimeout(
+        supabase
+          .from('profiles')
+          .select('id,username,email,avatar_url,role')
+          .eq('id', userId)
+          .single(),
+        PROFILE_TIMEOUT_MS,
+        'Profile lookup timed out'
+      );
 
       if (error || !data) {
-        // Profile 可能还未创建（触发器延迟），返回基本信息
-        return {
-          id: userId,
-          username: email.split('@')[0],
-          email,
-          avatar: ''
-        };
+        return buildFallbackUser(userId, email);
       }
 
       return {
         id: data.id,
-        username: data.username,
+        username: data.username || email.split('@')[0],
         email: data.email || email,
         avatar: data.avatar_url || '',
         role: data.role
       };
-    } catch (err: unknown) {
-      console.error('[Auth] Fetch profile unexpected error:', err);
-      return null;
+    } catch (error) {
+      console.warn('[Auth] Falling back to session user because profile lookup failed.', error);
+      return buildFallbackUser(userId, email);
     }
-  }, []);
+  }, [buildFallbackUser]);
 
-  // 初始化：检查现有 session，并订阅 Auth 状态变化
+  const hydrateUserFromSession = useCallback(async (activeSession: Session | null) => {
+    if (!activeSession?.user) {
+      if (isMountedRef.current) {
+        setUser(null);
+      }
+      return;
+    }
+
+    const fallbackUser = buildFallbackUser(
+      activeSession.user.id,
+      activeSession.user.email || '',
+      typeof activeSession.user.user_metadata?.username === 'string'
+        ? activeSession.user.user_metadata.username
+        : null
+    );
+
+    if (isMountedRef.current) {
+      setUser((current) => current?.id === fallbackUser.id
+        ? { ...fallbackUser, avatar: current.avatar, role: current.role }
+        : fallbackUser);
+    }
+
+    const profile = await fetchProfile(activeSession.user.id, activeSession.user.email || '');
+    if (isMountedRef.current) {
+      setUser(profile);
+    }
+  }, [buildFallbackUser, fetchProfile]);
+
   useEffect(() => {
     isMountedRef.current = true;
+    let didSessionRecoveryTimeout = false;
 
-    // 安全超时：避免初始化卡住导致无限加载
     const timeoutId = setTimeout(() => {
-      if (isMountedRef.current) setIsLoading(false);
-    }, 5000);
+      if (isMountedRef.current) {
+        didSessionRecoveryTimeout = true;
+        console.warn('[Auth] Session recovery exceeded timeout. Falling back to logged-out state.');
+        clearSupabaseAuthStorage();
+        setSession(null);
+        setUser(null);
+        setIsLoading(false);
+      }
+    }, SESSION_RECOVERY_TIMEOUT_MS);
 
     const init = async () => {
       try {
-        const { data: { session: existingSession } } = await supabase.auth.getSession();
+        const { data: { session: existingSession } } = await withTimeout(
+          supabase.auth.getSession(),
+          SESSION_RECOVERY_TIMEOUT_MS,
+          'Session recovery timed out'
+        );
 
-        if (isMountedRef.current && existingSession?.user) {
-          setSession(existingSession);
-          const profile = await fetchProfile(existingSession.user.id, existingSession.user.email || '');
-          if (isMountedRef.current) setUser(profile);
+        if (!isMountedRef.current || didSessionRecoveryTimeout) {
+          return;
         }
-      } catch (err: unknown) {
-        // 忽略开发模式下 React StrictMode 导致的请求中止报错
-        if (err instanceof Error && err.name === 'AbortError') return;
-        console.error('[Auth] Init error:', err);
+
+        setSession(existingSession);
+        await hydrateUserFromSession(existingSession);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+
+        console.error('[Auth] Init error:', error);
+        clearSupabaseAuthStorage();
+        if (isMountedRef.current) {
+          setSession(null);
+          setUser(null);
+        }
       } finally {
         if (isMountedRef.current) {
           clearTimeout(timeoutId);
@@ -92,100 +162,106 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
-    init();
+    void init();
 
-    // 监听认证状态变化（修复原死代码：之前因提前 return 而永远不会执行）
-    let subscription: { unsubscribe: () => void } | undefined;
+    const authState = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      if (!isMountedRef.current) {
+        return;
+      }
 
-    if (isMountedRef.current) {
-      const authState = supabase.auth.onAuthStateChange(
-        async (_event, newSession) => {
-          if (!isMountedRef.current) return;
-          setSession(newSession);
-          if (newSession?.user) {
-            const profile = await fetchProfile(newSession.user.id, newSession.user.email || '');
-            if (isMountedRef.current) setUser(profile);
-          } else {
-            setUser(null);
-          }
-        }
-      );
+      setSession(newSession);
+      await hydrateUserFromSession(newSession);
+    });
 
-      subscription = authState.data.subscription;
-    }
-
-    // 统一清理：同时清除超时定时器和 Auth 订阅
     return () => {
       isMountedRef.current = false;
       clearTimeout(timeoutId);
-      subscription?.unsubscribe();
+      authState.data.subscription.unsubscribe();
     };
-  }, [fetchProfile]);
+  }, [hydrateUserFromSession]);
 
   const login = async (email: string, password: string): Promise<{ error?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({ email, password }),
+        AUTH_ACTION_TIMEOUT_MS,
+        'Login request timed out. Check your network or VPN and try again.'
+      );
 
       if (error) {
         return { error: error.message };
       }
 
-      if (data.user) {
-        const profile = await fetchProfile(data.user.id, data.user.email || '');
-        setUser(profile);
+      if (data.session) {
         setSession(data.session);
+        void hydrateUserFromSession(data.session);
       }
 
       return {};
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Login failed';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Login failed';
       return { error: message };
     }
   };
 
   const signup = async (email: string, password: string, username: string): Promise<{ error?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { username }
-        }
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { username }
+          }
+        }),
+        AUTH_ACTION_TIMEOUT_MS,
+        'Signup request timed out. Check your network or VPN and try again.'
+      );
 
       if (error) {
         return { error: error.message };
       }
 
-      if (data.user && data.session) {
-        const profile = await fetchProfile(data.user.id, data.user.email || '');
-        setUser(profile);
+      if (data.session) {
         setSession(data.session);
+        void hydrateUserFromSession(data.session);
       }
 
       return {};
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Signup failed';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Signup failed';
       return { error: message };
     }
   };
 
   const logout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-    setSession(null);
+    try {
+      await withTimeout(
+        supabase.auth.signOut(),
+        AUTH_ACTION_TIMEOUT_MS,
+        'Logout request timed out'
+      );
+    } catch (error) {
+      console.warn('[Auth] Remote logout failed, clearing local session anyway.', error);
+    } finally {
+      clearSupabaseAuthStorage();
+      setUser(null);
+      setSession(null);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{
-      user,
-      session,
-      isAuthenticated: !!user,
-      isLoading,
-      login,
-      signup,
-      logout
-    }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        isAuthenticated: !!session,
+        isLoading,
+        login,
+        signup,
+        logout
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

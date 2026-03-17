@@ -20,7 +20,7 @@ export interface GeneratedImage {
   // New fields for Recreate & Display
   // 生成参数的结构化类型
   params?: {
-    web_app_id?: number;
+    web_app_id?: string | number;
     input_values?: Record<string, string | number | boolean>;
     aspect_ratio?: string;
     quality?: string;
@@ -33,6 +33,23 @@ export interface GeneratedImage {
   };
 }
 
+export type GenerationStage =
+  | 'queued'
+  | 'preparing'
+  | 'generating'
+  | 'completed'
+  | 'failed';
+
+export type GenerationFailureCode =
+  | 'timeout'
+  | 'invalid_input'
+  | 'quota'
+  | 'provider_error'
+  | 'network'
+  | 'cancelled'
+  | 'empty_output'
+  | 'unknown';
+
 // New Task Interface for Queue Management
 export interface GenerationTask {
   id: string;
@@ -43,18 +60,25 @@ export interface GenerationTask {
   imageUrl?: string;        // Primary/First Image
   images?: string[];        // All images for batch results
   error?: string;
+  failureCode?: GenerationFailureCode;
+  failureHint?: string;
+  failureDetail?: string;
   requestId?: string;       // Added for polling BizyAir directly
   params?: any;             // Passed to backend
   createdAt: number;
   startedAt?: number;       // When generation started (processing)
   completedAt?: number;     // When generation completed
   duration?: number;        // Generation duration in seconds
+  progress?: number;        // Estimated progress from provider state
+  bizyStatus?: string;      // Raw provider status for diagnostics
+  queueCount?: number;      // Tasks ahead if provider exposes it
+  stage?: GenerationStage;  // User-facing stage derived from provider state
   width: number;
   height: number;
 }
 
 export interface BizyAirRequest {
-  web_app_id: number;
+  web_app_id: string | number;
   suppress_preview_output: boolean;
   input_values: Record<string, string | number | boolean>;
 }

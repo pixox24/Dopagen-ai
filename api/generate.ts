@@ -13,6 +13,27 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
+const BIZYAIR_CREATE_TIMEOUT_MS = 25000;
+
+const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(input, {
+            ...init,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+            throw new Error(`BizyAir create request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+};
+
 export async function handleGenerateRequest(method: string | undefined, body: any, env: EnvLike = process.env): Promise<HandlerResult> {
     if (method === 'OPTIONS') {
         return {
@@ -54,7 +75,7 @@ export async function handleGenerateRequest(method: string | undefined, body: an
             input_values: params.input_values,
         };
 
-        const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
+        const response = await fetchWithTimeout('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -62,7 +83,7 @@ export async function handleGenerateRequest(method: string | undefined, body: an
                 'X-Bizyair-Task-Async': 'enable',
             },
             body: JSON.stringify(bizyPayload)
-        });
+        }, BIZYAIR_CREATE_TIMEOUT_MS);
 
         if (!response.ok) {
             const errText = await response.text();

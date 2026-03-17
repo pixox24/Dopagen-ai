@@ -3,12 +3,216 @@ import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { ASPECT_RATIOS, QUALITY_LEVELS, RESOLUTION_MAP } from '../constants';
 import Button from '../components/Button';
-import { GeneratedImage, GenerationTask } from '../types';
+import { GeneratedImage, GenerationStage, GenerationTask, Model } from '../types';
 
 const ImageZoom = React.lazy(() => import('../components/ImageZoom'));
 
 // Default Thumbnail for Models
 const DEFAULT_MODEL_THUMB = `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzExMSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjIwIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==`;
+
+const STAGE_SEQUENCE: GenerationStage[] = ['queued', 'preparing', 'generating', 'completed'];
+
+const getAspectRatioFromDimensions = (width?: number, height?: number) => {
+    if (!width || !height) {
+        return '1:1';
+    }
+
+    const ratio = width / height;
+    if (ratio > 1.7) return '16:9';
+    if (ratio > 1.4) return '3:2';
+    if (ratio > 1.1) return '4:3';
+    if (ratio > 0.9) return '1:1';
+    if (ratio > 0.7) return '3:4';
+    if (ratio > 0.55) return '2:3';
+    return '9:16';
+};
+
+const getTaskStage = (task: Pick<GenerationTask, 'status' | 'stage'>): GenerationStage => {
+    if (task.status === 'completed') return 'completed';
+    if (task.status === 'failed') return 'failed';
+    if (task.stage) return task.stage;
+    return task.status === 'queued' ? 'queued' : 'generating';
+};
+
+const getStageLabel = (stage: GenerationStage) => {
+    switch (stage) {
+        case 'queued':
+            return 'Queued';
+        case 'preparing':
+            return 'Preparing';
+        case 'generating':
+            return 'Generating';
+        case 'completed':
+            return 'Complete';
+        case 'failed':
+            return 'Failed';
+        default:
+            return 'Working';
+    }
+};
+
+const getFailureTitle = (task: GenerationTask) => {
+    switch (task.failureCode) {
+        case 'timeout':
+            return 'Generation Timed Out';
+        case 'invalid_input':
+            return 'Settings Need Adjustment';
+        case 'quota':
+            return 'Service Is Busy';
+        case 'network':
+            return 'Connection Problem';
+        case 'cancelled':
+            return 'Generation Cancelled';
+        case 'empty_output':
+            return 'No Image Was Returned';
+        default:
+            return 'Generation Failed';
+    }
+};
+
+const getTaskProgress = (task: Pick<GenerationTask, 'status' | 'stage' | 'progress'>) => {
+    const stage = getTaskStage(task);
+    const fallback = stage === 'queued'
+        ? 8
+        : stage === 'preparing'
+            ? 38
+            : stage === 'generating'
+                ? 72
+                : 100;
+
+    const progress = typeof task.progress === 'number' ? task.progress : fallback;
+    return Math.max(0, Math.min(100, Math.round(progress)));
+};
+
+const getTaskFeedback = (task: GenerationTask, elapsedSeconds: number) => {
+    const stage = getTaskStage(task);
+    const progress = getTaskProgress(task);
+    const meta: string[] = [];
+
+    if (elapsedSeconds > 0) {
+        meta.push(`${elapsedSeconds}s elapsed`);
+    }
+
+    if (task.queueCount !== undefined && task.queueCount >= 0) {
+        meta.push(task.queueCount === 0 ? 'Next in queue' : `${task.queueCount} task${task.queueCount === 1 ? '' : 's'} ahead`);
+    }
+
+    if (task.bizyStatus) {
+        meta.push(`Provider: ${task.bizyStatus}`);
+    }
+
+    switch (stage) {
+        case 'queued':
+            return {
+                stage,
+                progress,
+                title: 'Queued for generation',
+                description: task.queueCount !== undefined && task.queueCount >= 0
+                    ? task.queueCount === 0
+                        ? 'Your task is next in line. We are waiting for compute to free up.'
+                        : `There are ${task.queueCount} task${task.queueCount === 1 ? '' : 's'} ahead of yours. We will start as soon as compute is available.`
+                    : 'Your task has been accepted and is waiting for compute to free up.',
+                meta,
+            };
+        case 'preparing':
+            return {
+                stage,
+                progress,
+                title: 'Preparing model',
+                description: 'We are allocating compute and warming up the model before the first pixels render.',
+                meta,
+            };
+        case 'generating':
+            return {
+                stage,
+                progress,
+                title: 'Generating your image',
+                description: elapsedSeconds > 45
+                    ? 'The model is still rendering. Larger sizes and more complex prompts can take a bit longer.'
+                    : 'The model is actively rendering your image now.',
+                meta,
+            };
+        case 'completed':
+            return {
+                stage,
+                progress,
+                title: 'Generation complete',
+                description: 'Your image is ready.',
+                meta,
+            };
+        default:
+            return {
+                stage,
+                progress,
+                title: getFailureTitle(task),
+                description: task.failureHint || 'Try again or adjust the settings and rerun the task.',
+                meta,
+            };
+    }
+};
+
+const getImmediateFailurePresentation = (message: string) => {
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes('timeout') || normalized.includes('timed out')) {
+        return {
+            error: 'The request timed out before the image service returned a result.',
+            failureCode: 'timeout' as const,
+            failureHint: 'Try again with 1K quality or a simpler prompt.',
+            failureDetail: message,
+        };
+    }
+
+    if (
+        normalized.includes('429') ||
+        normalized.includes('quota') ||
+        normalized.includes('rate limit') ||
+        normalized.includes('capacity')
+    ) {
+        return {
+            error: 'The image service is busy or temporarily rate-limited.',
+            failureCode: 'quota' as const,
+            failureHint: 'Wait a moment and retry, or switch to another model.',
+            failureDetail: message,
+        };
+    }
+
+    if (
+        normalized.includes('missing') ||
+        normalized.includes('invalid') ||
+        normalized.includes('400') ||
+        normalized.includes('required')
+    ) {
+        return {
+            error: 'Some settings were rejected before generation could start.',
+            failureCode: 'invalid_input' as const,
+            failureHint: 'Check your prompt, reference images, and parameters, then try again.',
+            failureDetail: message,
+        };
+    }
+
+    if (
+        normalized.includes('network') ||
+        normalized.includes('fetch') ||
+        normalized.includes('502') ||
+        normalized.includes('503') ||
+        normalized.includes('504')
+    ) {
+        return {
+            error: 'The connection to the image service failed before generation could start.',
+            failureCode: 'network' as const,
+            failureHint: 'Retry in a moment. If it keeps happening, switch models or lower the quality.',
+            failureDetail: message,
+        };
+    }
+
+    return {
+        error: 'The task could not be submitted to the image service.',
+        failureCode: 'provider_error' as const,
+        failureHint: 'Retry the task. If the same model keeps failing, switch to another one.',
+        failureDetail: message,
+    };
+};
 
 const DeleteTaskButton = ({ onDelete }: { onDelete: () => void }) => {
     const [status, setStatus] = useState<'idle' | 'confirm'>('idle');
@@ -41,6 +245,8 @@ interface TaskItemProps {
 const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: TaskItemProps) {
     const handleDelete = () => onDelete(task.id);
     const [elapsedTime, setElapsedTime] = useState<number>(0);
+    const taskStage = getTaskStage(task);
+    const taskProgress = getTaskProgress(task);
 
     // Timer effect for ongoing tasks
     useEffect(() => {
@@ -82,6 +288,20 @@ const TaskItem = memo(function TaskItem({ task, isActive, onSelect, onDelete }: 
             {displayTime !== null && (
                 <div className={`absolute top-1 right-1 z-20 px-1.5 py-0.5 rounded text-[9px] font-mono ${task.status === 'completed' ? 'bg-green-500/80 text-white' : 'bg-black/60 text-white/80'}`}>
                     {displayTime}s
+                </div>
+            )}
+
+            {task.status !== 'completed' && (
+                <div className="absolute bottom-0 left-0 right-0 z-20">
+                    <div className="mx-1 mb-1 rounded bg-black/60 px-1.5 py-0.5 text-[8px] uppercase tracking-[0.18em] text-white/70 backdrop-blur-sm">
+                        {getStageLabel(taskStage)}
+                    </div>
+                    <div className="h-0.5 bg-white/10">
+                        <div
+                            className={`h-full transition-all duration-500 ${task.status === 'failed' ? 'bg-red-400' : 'bg-white'}`}
+                            style={{ width: `${taskProgress}%` }}
+                        />
+                    </div>
                 </div>
             )}
 
@@ -137,8 +357,8 @@ const Generate: React.FC = () => {
     const activeUploadKey = useRef<string | null>(null);
     const [zoomUrl, setZoomUrl] = useState<string | null>(null);
     const [activeBatchIndex, setActiveBatchIndex] = useState<number | null>(null);
+    const [activeElapsedTime, setActiveElapsedTime] = useState(0);
 
-    // 直接从 AppContext 获取任务状态（原 useTaskPolling Hook 已内联）
     const activeTask = useMemo(() => tasks.find(t => t.id === activeTaskId), [tasks, activeTaskId]);
 
 
@@ -161,6 +381,20 @@ const Generate: React.FC = () => {
     const [pendingFormState, setPendingFormState] = useState<Record<string, string | number | boolean | null> | null>(null);
 
     useEffect(() => {
+        if (!activeTask || (activeTask.status !== 'processing' && activeTask.status !== 'queued')) {
+            setActiveElapsedTime(0);
+            return;
+        }
+
+        const startTime = activeTask.startedAt || activeTask.createdAt;
+        const updateElapsedTime = () => setActiveElapsedTime(Math.floor((Date.now() - startTime) / 1000));
+
+        updateElapsedTime();
+        const intervalId = setInterval(updateElapsedTime, 1000);
+        return () => clearInterval(intervalId);
+    }, [activeTask]);
+
+    useEffect(() => {
         const current = availableModels.find(m => m.id === selectedModelId);
         if (current && current.schema) {
             // If we have a pending form state from Recreate, use it instead of defaults
@@ -177,15 +411,85 @@ const Generate: React.FC = () => {
         }
     }, [selectedModelId, availableModels, pendingFormState]);
 
+    const findModelForPreset = (modelId?: string, modelName?: string) => {
+        return availableModels.find(m => m.id === modelId) ||
+            availableModels.find(m => m.name === modelName) ||
+            availableModels.find(m => m.id === modelName) ||
+            availableModels[0];
+    };
+
+    const applyGenerationPreset = ({
+        prompt,
+        modelId,
+        modelName,
+        params,
+        width,
+        height,
+    }: {
+        prompt: string;
+        modelId?: string;
+        modelName?: string;
+        params?: GeneratedImage['params'] | GenerationTask['params'];
+        width?: number;
+        height?: number;
+    }) => {
+        setPromptForGeneration(prompt);
+
+        const targetModel = findModelForPreset(modelId, modelName);
+        if (!targetModel) {
+            return null;
+        }
+
+        setSelectedModelId(targetModel.id);
+
+        if (params?.input_values) {
+            setPendingFormState(params.input_values as Record<string, string | number | boolean | null>);
+        }
+
+        if (params?.aspect_ratio) {
+            setAspectRatio(String(params.aspect_ratio));
+        } else {
+            setAspectRatio(getAspectRatioFromDimensions(width, height));
+        }
+
+        if (params?.quality) {
+            setQuality(String(params.quality));
+        }
+
+        topRef.current?.scrollIntoView({ behavior: 'smooth' });
+        return targetModel;
+    };
+
     const handleInputChange = (key: string, value: string | number | boolean | null) => setFormState(prev => ({ ...prev, [key]: value }));
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (file && activeUploadKey.current) {
-            const reader = new FileReader();
-            reader.onloadend = () => handleInputChange(activeUploadKey.current!, reader.result as string);
-            reader.readAsDataURL(file);
+        if (!file || !activeUploadKey.current) {
+            return;
         }
+
+        const uploadKey = activeUploadKey.current;
+
+        void (async () => {
+            try {
+                setErrorMsg(null);
+
+                const { default: imageCompression } = await import('browser-image-compression');
+                const processedFile = await imageCompression(file, {
+                    maxSizeMB: 1.5,
+                    maxWidthOrHeight: 2048,
+                    useWebWorker: true,
+                    initialQuality: 0.82,
+                });
+
+                const reader = new FileReader();
+                reader.onloadend = () => handleInputChange(uploadKey, reader.result as string);
+                reader.readAsDataURL(processedFile);
+            } catch (error) {
+                console.error('[Generate] Failed to prepare input image:', error);
+                setErrorMsg('Failed to prepare the reference image. Try a smaller file or switch off the VPN and retry.');
+            }
+        })();
     };
 
     const triggerUpload = (key: string) => {
@@ -195,51 +499,14 @@ const Generate: React.FC = () => {
 
     const handleRecreate = (e: React.MouseEvent | null, img: GeneratedImage) => {
         if (e) e.stopPropagation();
-
-        // 1. Restore Prompt
-        setPromptForGeneration(img.prompt);
-
-        // 2. Find Model - try modelId first, then model name, fallback to current
-        let targetModel = availableModels.find(m => m.id === img.modelId) ||
-            availableModels.find(m => m.name === img.model) ||
-            availableModels.find(m => m.id === img.model);
-
-        if (!targetModel && availableModels.length > 0) {
-            // Fallback to first available model if original not found
-            targetModel = availableModels[0];
-            console.warn(`Original model "${img.model}" not found, using fallback: ${targetModel.name}`);
-        }
-
-        if (targetModel) {
-            setSelectedModelId(targetModel.id);
-
-            // 3. Prepare Form State for callback in useEffect
-            if (img.params?.input_values) {
-                setPendingFormState(img.params.input_values);
-            }
-
-            // 4. Restore Global Settings
-            if (img.params?.aspect_ratio) {
-                setAspectRatio(img.params.aspect_ratio);
-            }
-            if (img.params?.quality) {
-                setQuality(img.params.quality);
-            }
-
-            // 5. Restore resolution from width/height if params not available
-            if (!img.params?.aspect_ratio && img.width && img.height) {
-                const ratio = img.width / img.height;
-                if (ratio > 1.7) setAspectRatio('16:9');
-                else if (ratio > 1.4) setAspectRatio('3:2');
-                else if (ratio > 1.1) setAspectRatio('4:3');
-                else if (ratio > 0.9) setAspectRatio('1:1');
-                else if (ratio > 0.7) setAspectRatio('3:4');
-                else if (ratio > 0.55) setAspectRatio('2:3');
-                else setAspectRatio('9:16');
-            }
-        }
-
-        topRef.current?.scrollIntoView({ behavior: 'smooth' });
+        applyGenerationPreset({
+            prompt: img.prompt,
+            modelId: img.modelId || img.model,
+            modelName: img.model,
+            params: img.params,
+            width: img.width,
+            height: img.height,
+        });
     };
 
     const currentModel = availableModels.find(m => m.id === selectedModelId) || availableModels[0];
@@ -250,40 +517,70 @@ const Generate: React.FC = () => {
     const mainPromptInput = visibleInputs.find(i => i.type === 'textarea' && (i.label === 'Prompt' || i.label === 'Text Input'));
     const negativePromptInput = visibleInputs.find(i => i.label === 'Negative Prompt');
     const otherInputs = visibleInputs.filter(i => i !== mainPromptInput && i !== negativePromptInput && i.type !== 'image');
+    const promptRequired = Boolean(mainPromptInput);
+    const canSubmitCurrentForm = !promptRequired || generationPrompt.trim().length > 0;
 
-    const handleGenerate = async () => {
-        if (!user) { alert("Please log in."); return; }
-        const promptVal = generationPrompt.trim();
-        if (!promptVal && mainPromptInput) return;
+    const submitTask = async ({
+        model,
+        prompt,
+        draftFormState,
+        ratio,
+        qualityValue,
+    }: {
+        model: Model;
+        prompt: string;
+        draftFormState: Record<string, string | number | boolean | null>;
+        ratio: string;
+        qualityValue: string;
+    }) => {
+        if (!user) {
+            alert('Please log in.');
+            return;
+        }
+        const promptVal = prompt.trim();
+        const modelVisibleInputs = model.schema?.inputs.filter(input => input.type !== 'hidden') || [];
+        const modelImageInputs = modelVisibleInputs.filter(input => input.type === 'image');
+        const modelPromptInput = modelVisibleInputs.find(input => input.type === 'textarea' && (input.label === 'Prompt' || input.label === 'Text Input'));
 
-        if (imageInputs.length > 0) {
-            const missing = imageInputs.some(i => !formState[i.key]);
-            if (missing) { setErrorMsg("Please upload all required reference images."); return; }
+        if (!promptVal && modelPromptInput) {
+            setErrorMsg('Please enter a prompt before starting generation.');
+            return;
+        }
+
+        if (modelImageInputs.length > 0) {
+            const missing = modelImageInputs.some(input => !draftFormState[input.key]);
+            if (missing) {
+                setErrorMsg('Please upload all required reference images.');
+                return;
+            }
         }
 
         setErrorMsg(null);
 
-        const dimensions = RESOLUTION_MAP[aspectRatio]?.[quality] || { w: 1024, h: 1024 };
-        const finalFormState = { ...formState };
-        if (mainPromptInput) finalFormState[mainPromptInput.key] = promptVal;
+        const dimensions = RESOLUTION_MAP[ratio]?.[qualityValue] || { w: 1024, h: 1024 };
+        const finalFormState = { ...draftFormState };
+        if (modelPromptInput) finalFormState[modelPromptInput.key] = promptVal;
 
         // 1. 立即创建待处理任务并添加到 state，让加载动画立即显示
-        const pendingTaskId = 'pending_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+        const pendingTaskId = `pending_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
         const now = Date.now();
         const pendingTask: GenerationTask = {
             id: pendingTaskId,
             status: 'queued',
+            stage: 'queued',
+            progress: 5,
+            bizyStatus: 'Submitting',
             prompt: promptVal,
-            modelName: currentModel.name,
-            modelId: currentModel.id,
+            modelName: model.name,
+            modelId: model.id,
             params: {
-                web_app_id: currentModel.schema?.model_id,
+                web_app_id: model.schema?.model_id,
                 input_values: finalFormState,
-                aspect_ratio: aspectRatio,
-                quality
+                aspect_ratio: ratio,
+                quality: qualityValue
             },
             createdAt: now,
-            startedAt: now, // Start timing immediately
+            startedAt: now,
             width: dimensions.w,
             height: dimensions.h
         };
@@ -292,17 +589,21 @@ const Generate: React.FC = () => {
 
         try {
             const { submitGenerationTask } = await import('../services/api');
-            // 2. Submit Task to Backend
             const submitResponse = await submitGenerationTask({
-                model: currentModel,
+                model,
                 formState: finalFormState,
                 globalWidth: dimensions.w,
                 globalHeight: dimensions.h,
-                globalAspectRatio: aspectRatio,
-                globalQuality: quality
+                globalAspectRatio: ratio,
+                globalQuality: qualityValue
             });
 
             const { taskId: backendTaskId, imageUrl, status, requestId, submittedParams } = submitResponse;
+            const nextStatus = status === 'COMPLETED' ? 'completed' : (status === 'PROCESSING' || status === 'PENDING' ? 'processing' : 'queued');
+            const nextStage = status === 'COMPLETED' ? 'completed' : nextStatus === 'processing' ? 'preparing' : 'queued';
+            const nextProgress = status === 'COMPLETED' ? 100 : nextStatus === 'processing' ? 24 : 8;
+            const completedAt = status === 'COMPLETED' && imageUrl ? Date.now() : undefined;
+            const duration = completedAt ? Math.floor((completedAt - pendingTask.startedAt!) / 1000) : undefined;
 
             // 3. 用真实的 task ID 更新任务
             setTasks(prev => prev.map(t =>
@@ -315,9 +616,19 @@ const Generate: React.FC = () => {
                             ...t.params,
                             ...submittedParams
                         } : t.params,
-                        status: status === 'COMPLETED' ? 'completed' : (status === 'PROCESSING' || status === 'PENDING' ? 'processing' : t.status),
+                        status: nextStatus,
+                        stage: nextStage,
+                        progress: nextProgress,
+                        bizyStatus: status === 'COMPLETED' ? 'Success' : nextStatus === 'processing' ? 'Preparing' : 'Queued',
+                        queueCount: undefined,
                         imageUrl: imageUrl || t.imageUrl,
-                        images: imageUrl ? [imageUrl] : t.images
+                        images: imageUrl ? [imageUrl] : t.images,
+                        error: undefined,
+                        failureCode: undefined,
+                        failureHint: undefined,
+                        failureDetail: undefined,
+                        completedAt,
+                        duration
                     }
                     : t
             ));
@@ -325,16 +636,6 @@ const Generate: React.FC = () => {
 
             // 4. 如果已经生成完成，立即添加到画廊
             if (status === 'COMPLETED' && imageUrl) {
-                const completedAt = Date.now();
-                const duration = Math.floor((completedAt - pendingTask.startedAt!) / 1000);
-
-                // Update task with completion time
-                setTasks(prev => prev.map(t =>
-                    t.id === backendTaskId
-                        ? { ...t, completedAt, duration }
-                        : t
-                ));
-
                 addUserImage({
                     id: `img_${backendTaskId}`,
                     url: imageUrl,
@@ -345,14 +646,15 @@ const Generate: React.FC = () => {
                     createdAt: Date.now(),
                     isPublic: false,
                     userId: user?.id || 'anon',
-                    model: currentModel.name,
-                    modelId: currentModel.id,
+                    model: model.name,
+                    modelId: model.id,
                     params: {
-                        aspect_ratio: aspectRatio,
-                        quality: quality,
+                        web_app_id: model.schema?.model_id,
+                        aspect_ratio: ratio,
+                        quality: qualityValue,
                         input_values: finalFormState
                     },
-                    duration: duration
+                    duration: duration || 0
                 });
             }
 
@@ -361,18 +663,89 @@ const Generate: React.FC = () => {
             if (err instanceof Error && err.name === 'AbortError') return;
 
             const message = err instanceof Error ? err.message : 'Generation failed';
+            const failure = getImmediateFailurePresentation(message);
+            const completedAt = Date.now();
             console.error(message);
             // 失败时移除待处理任务
-            setTasks(prev => prev.filter(t => t.id !== pendingTaskId));
-            if (activeTaskId === pendingTaskId) setActiveTaskId(null);
-            setErrorMsg(message);
+            setTasks(prev => prev.map(task =>
+                task.id === pendingTaskId
+                    ? {
+                        ...task,
+                        status: 'failed',
+                        stage: 'failed',
+                        progress: 100,
+                        bizyStatus: 'Submission Failed',
+                        completedAt,
+                        duration: task.startedAt ? Math.max(0, Math.floor((completedAt - task.startedAt) / 1000)) : 0,
+                        error: failure.error,
+                        failureCode: failure.failureCode,
+                        failureHint: failure.failureHint,
+                        failureDetail: failure.failureDetail,
+                    }
+                    : task
+            ));
+            setActiveTaskId(pendingTaskId);
+            setErrorMsg(failure.error);
         }
+    };
+
+    const handleGenerate = async () => {
+        await submitTask({
+            model: currentModel,
+            prompt: generationPrompt,
+            draftFormState: formState,
+            ratio: aspectRatio,
+            qualityValue: quality,
+        });
+    };
+
+    const handleRetryTask = async (task: GenerationTask) => {
+        const targetModel = findModelForPreset(task.modelId, task.modelName);
+        if (!targetModel) {
+            setErrorMsg('The original model is no longer available. Please choose another model.');
+            return;
+        }
+
+        const retryRatio = task.params?.aspect_ratio ? String(task.params.aspect_ratio) : getAspectRatioFromDimensions(task.width, task.height);
+        const retryQuality = task.params?.quality ? String(task.params.quality) : quality;
+        const retryFormState = (task.params?.input_values as Record<string, string | number | boolean | null>) || {};
+
+        applyGenerationPreset({
+            prompt: task.prompt,
+            modelId: task.modelId,
+            modelName: task.modelName,
+            params: task.params,
+            width: task.width,
+            height: task.height,
+        });
+
+        await submitTask({
+            model: targetModel,
+            prompt: task.prompt,
+            draftFormState: retryFormState,
+            ratio: retryRatio,
+            qualityValue: retryQuality,
+        });
+    };
+
+    const handleEditFailedTask = (task: GenerationTask) => {
+        applyGenerationPreset({
+            prompt: task.prompt,
+            modelId: task.modelId,
+            modelName: task.modelName,
+            params: task.params,
+            width: task.width,
+            height: task.height,
+        });
     };
 
     // Canvas View Logic
     const displayedImageUrl = activeTask?.images && activeTask.images.length > 0 ? (activeBatchIndex !== null ? activeTask.images[activeBatchIndex] : activeTask.imageUrl) : activeTask?.imageUrl;
     const isBatchView = activeTask?.status === 'completed' && activeTask.images && activeTask.images.length > 1 && activeBatchIndex === null;
     const taskAspectRatio = activeTask && activeTask.height > 0 ? activeTask.width / activeTask.height : 1;
+    const isActiveTaskRunning = activeTask?.status === 'processing' || activeTask?.status === 'queued';
+    const activeTaskFeedback = activeTask ? getTaskFeedback(activeTask, activeElapsedTime) : null;
+    const activeStageIndex = activeTaskFeedback ? STAGE_SEQUENCE.indexOf(activeTaskFeedback.stage === 'failed' ? 'generating' : activeTaskFeedback.stage) : -1;
 
     // --- RENDER ---
     return (
@@ -488,7 +861,7 @@ const Generate: React.FC = () => {
                             </div>
 
                             <div className="pt-2">
-                                <Button onClick={handleGenerate} disabled={(!generationPrompt && !mainPromptInput) || isLoading} isLoading={isLoading} className="w-full py-3">
+                                <Button onClick={handleGenerate} disabled={!canSubmitCurrentForm || isLoading} isLoading={isLoading} className="w-full py-3">
                                     {isLoading ? 'Queued' : 'Generate'}
                                 </Button>
                             </div>
@@ -501,27 +874,99 @@ const Generate: React.FC = () => {
                 <div className="lg:col-span-8 h-[700px]">
                     <div className="h-full carbon-card flex overflow-hidden relative bg-[#050505] shadow-2xl">
                         <div className="flex-1 flex flex-col relative bg-[#050505]">
-                            <div className={`flex-grow flex items-center justify-center relative overflow-hidden px-4 pt-4 pb-16 ${isLoading ? 'bg-black' : "bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9IiMyMjIiLz48L3N2Zz4=')]"}`}>
+                            <div className={`flex-grow flex items-center justify-center relative overflow-hidden px-4 pt-4 pb-16 ${isActiveTaskRunning ? 'bg-black' : "bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9IiMyMjIiLz48L3N2Zz4=')]"}`}>
                                 {!activeTask ? (
                                     <div className="text-center text-carbon-muted/20">
                                         <div className="text-4xl mb-2 font-light text-carbon-border">+</div>
                                         <p className="text-xs font-medium uppercase tracking-wider text-carbon-muted/40">Select or Start a Task</p>
                                     </div>
-                                ) : isLoading ? (
-                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black overflow-hidden gap-6">
-                                        <div className="spinner">
-                                            <div className="double-bounce1"></div>
-                                            <div className="double-bounce2"></div>
-                                        </div>
-                                        <div className="text-white/40 text-xs tracking-[0.2em] font-light uppercase">
-                                            Processing...
+                                ) : isActiveTaskRunning && activeTaskFeedback ? (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-black/95 p-6">
+                                        <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0b0b]/95 p-6 md:p-8">
+                                            <div className="mb-6 flex items-start justify-between gap-4">
+                                                <div className="space-y-3">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="h-3 w-3 animate-pulse rounded-full bg-white"></div>
+                                                        <p className="text-[10px] font-medium uppercase tracking-[0.3em] text-carbon-muted">Live Status</p>
+                                                    </div>
+                                                    <div>
+                                                        <h3 className="text-2xl font-semibold text-white">{activeTaskFeedback.title}</h3>
+                                                        <p className="mt-2 max-w-xl text-sm leading-relaxed text-carbon-muted">{activeTaskFeedback.description}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="text-3xl font-semibold text-white">{activeTaskFeedback.progress}%</div>
+                                                    <div className="text-[10px] uppercase tracking-[0.25em] text-carbon-muted">estimated</div>
+                                                </div>
+                                            </div>
+
+                                            <div className="mb-6">
+                                                <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                                                    <div
+                                                        className="h-full rounded-full bg-gradient-to-r from-white via-white to-[#6ee7ff] transition-all duration-500"
+                                                        style={{ width: `${activeTaskFeedback.progress}%` }}
+                                                    />
+                                                </div>
+                                                <p className="mt-2 text-[11px] leading-relaxed text-carbon-muted">
+                                                    Live stage updates refresh every few seconds. The percentage is an estimate based on provider state, not an exact internal progress value.
+                                                </p>
+                                            </div>
+
+                                            <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                                {(activeTaskFeedback.meta.length > 0 ? activeTaskFeedback.meta : ['Task accepted', 'Waiting for next provider update', 'You can keep editing other settings while this runs']).map((item) => (
+                                                    <div key={item} className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/80">
+                                                        {item}
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                                {STAGE_SEQUENCE.map((stage, index) => {
+                                                    const isCompletedStage = activeStageIndex > index;
+                                                    const isCurrentStage = activeTaskFeedback.stage === stage;
+                                                    return (
+                                                        <div
+                                                            key={stage}
+                                                            className={`rounded-xl border px-3 py-3 text-center text-[11px] font-medium uppercase tracking-[0.22em] transition-colors ${isCompletedStage || isCurrentStage ? 'border-white/20 bg-white/10 text-white' : 'border-white/10 bg-white/[0.03] text-carbon-muted'}`}
+                                                        >
+                                                            {getStageLabel(stage)}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                     </div>
                                 ) : activeTask.status === 'failed' ? (
-                                    <div className="text-center p-8 max-w-md">
-                                        <div className="inline-flex p-4 rounded-full bg-red-500/10 mb-4 text-red-500"><svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div>
-                                        <h3 className="text-lg font-medium text-white mb-2">Generation Failed</h3>
-                                        <p className="text-sm text-carbon-muted mb-4">{activeTask.error}</p>
+                                    <div className="w-full max-w-2xl p-6 md:p-8">
+                                        <div className="rounded-2xl border border-red-500/20 bg-[#0d0909]/95 p-6 md:p-8">
+                                            <div className="mb-4 inline-flex rounded-full bg-red-500/10 p-4 text-red-500">
+                                                <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                </svg>
+                                            </div>
+                                            <div className="mb-5 space-y-2">
+                                                <p className="text-[10px] font-medium uppercase tracking-[0.28em] text-red-300/70">Task Feedback</p>
+                                                <h3 className="text-2xl font-semibold text-white">{getFailureTitle(activeTask)}</h3>
+                                                <p className="text-base leading-relaxed text-red-50/90">{activeTask.error || 'The task stopped before a result was returned.'}</p>
+                                                {activeTask.failureHint && (
+                                                    <p className="text-sm leading-relaxed text-carbon-muted">{activeTask.failureHint}</p>
+                                                )}
+                                            </div>
+                                            {activeTask.failureDetail && activeTask.failureDetail !== activeTask.error && (
+                                                <div className="mb-6 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                                                    <p className="mb-1 text-[10px] uppercase tracking-[0.2em] text-carbon-muted">Technical Detail</p>
+                                                    <p className="text-sm text-white/75">{activeTask.failureDetail}</p>
+                                                </div>
+                                            )}
+                                            <div className="flex flex-wrap gap-3">
+                                                <Button onClick={() => void handleRetryTask(activeTask)} variant="primary" size="sm">
+                                                    Retry Now
+                                                </Button>
+                                                <Button onClick={() => handleEditFailedTask(activeTask)} variant="secondary" size="sm">
+                                                    Review Settings
+                                                </Button>
+                                            </div>
+                                        </div>
                                     </div>
                                 ) : isBatchView ? (
                                     <div className="grid grid-cols-2 gap-3 w-full h-full p-4 overflow-y-auto custom-scrollbar content-start">

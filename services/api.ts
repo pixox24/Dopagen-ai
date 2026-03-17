@@ -1,4 +1,26 @@
-import { GenerateOptions } from '../types';
+import { GenerateOptions, GenerationFailureCode, GenerationStage } from '../types';
+
+const GENERATE_REQUEST_TIMEOUT_MS = 45000;
+const STATUS_REQUEST_TIMEOUT_MS = 15000;
+
+const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(input, {
+            ...init,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+            throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+};
 
 export interface TaskResponse {
     id: string;
@@ -6,9 +28,13 @@ export interface TaskResponse {
     resultUrl?: string;
     images?: string[];
     error?: string;
+    failureCode?: GenerationFailureCode;
+    failureHint?: string;
+    failureDetail?: string;
     progress?: number;
     bizyStatus?: string;
     queueCount?: number;
+    stage?: GenerationStage;
     requestId?: string;
 }
 
@@ -92,7 +118,7 @@ export const submitGenerationTask = async (
     const basePath = (import.meta.env.VITE_BASE_PATH || '').replace(/\/$/, '');
     const apiUrl = basePath ? `${basePath}/api/generate` : '/api/generate';
 
-    const response = await fetch(apiUrl, {
+    const response = await fetchWithTimeout(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -101,7 +127,7 @@ export const submitGenerationTask = async (
             prompt,
             params,
         }),
-    });
+    }, GENERATE_REQUEST_TIMEOUT_MS);
 
     if (!response.ok) {
         const errText = await response.text().catch(() => 'Network request failed');
@@ -130,7 +156,7 @@ export const pollTaskStatus = async (
     const basePath = (import.meta.env.VITE_BASE_PATH || '').replace(/\/$/, '');
     const apiUrl = basePath ? `${basePath}/api/status` : '/api/status';
 
-    const response = await fetch(apiUrl, {
+    const response = await fetchWithTimeout(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -138,7 +164,7 @@ export const pollTaskStatus = async (
             taskId,
             taskDetails: taskDetails || null
         })
-    });
+    }, STATUS_REQUEST_TIMEOUT_MS);
 
     if (!response.ok) {
         const errText = await response.text().catch(() => 'Network request failed');
@@ -153,8 +179,12 @@ export const pollTaskStatus = async (
         resultUrl: data.resultUrl,
         images: data.images,
         error: data.error,
+        failureCode: data.failureCode,
+        failureHint: data.failureHint,
+        failureDetail: data.failureDetail,
         progress: data.progress,
         bizyStatus: data.bizyStatus,
-        queueCount: data.queueCount
+        queueCount: data.queueCount,
+        stage: data.stage
     };
 };

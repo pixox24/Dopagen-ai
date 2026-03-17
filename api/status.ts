@@ -26,9 +26,170 @@ interface HandlerResult {
     headers?: Record<string, string>;
 }
 
+interface FailurePayload {
+    error: string;
+    failureCode: 'timeout' | 'invalid_input' | 'quota' | 'provider_error' | 'network' | 'cancelled' | 'empty_output' | 'unknown';
+    failureHint: string;
+    failureDetail?: string;
+}
+
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+const BIZYAIR_DETAIL_TIMEOUT_MS = 15000;
+const BIZYAIR_OUTPUTS_TIMEOUT_MS = 20000;
+
+const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(input, {
+            ...init,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+            throw new Error(`BizyAir status request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+};
+
+const normalizeProviderMessage = (value: unknown) => {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    return value.replace(/\s+/g, ' ').trim();
+};
+
+const mapProgressStage = (bizyStatus: string) => {
+    const normalized = bizyStatus.toLowerCase();
+
+    if (normalized.includes('queu')) {
+        return {
+            stage: 'queued' as const,
+            progress: 12,
+            status: 'QUEUED' as const,
+        };
+    }
+
+    if (
+        normalized.includes('prepar') ||
+        normalized.includes('alloc') ||
+        normalized.includes('init') ||
+        normalized.includes('warm')
+    ) {
+        return {
+            stage: 'preparing' as const,
+            progress: 38,
+            status: 'PROCESSING' as const,
+        };
+    }
+
+    return {
+        stage: 'generating' as const,
+        progress: 72,
+        status: 'PROCESSING' as const,
+    };
+};
+
+const classifyFailure = (rawError: unknown, bizyStatus: string): FailurePayload => {
+    const detail = normalizeProviderMessage(rawError);
+    const normalized = `${bizyStatus} ${detail}`.toLowerCase();
+
+    if (bizyStatus === 'Canceled' || normalized.includes('cancel')) {
+        return {
+            error: 'Generation was cancelled before the result was returned.',
+            failureCode: 'cancelled',
+            failureHint: 'Start a new generation when you are ready.',
+            failureDetail: detail || 'The provider reported that the task was cancelled.',
+        };
+    }
+
+    if (normalized.includes('timeout') || normalized.includes('timed out') || normalized.includes('deadline')) {
+        return {
+            error: 'The image service took too long to finish this request.',
+            failureCode: 'timeout',
+            failureHint: 'Try again with 1K quality or a simpler prompt.',
+            failureDetail: detail || 'The provider timed out while generating the image.',
+        };
+    }
+
+    if (
+        normalized.includes('quota') ||
+        normalized.includes('rate limit') ||
+        normalized.includes('too many') ||
+        normalized.includes('capacity') ||
+        normalized.includes('limit exceeded')
+    ) {
+        return {
+            error: 'The image service is busy or your request hit a temporary limit.',
+            failureCode: 'quota',
+            failureHint: 'Wait a moment and try again, or switch to another model.',
+            failureDetail: detail || 'The provider rejected the request because of capacity limits.',
+        };
+    }
+
+    if (
+        normalized.includes('no parsable image') ||
+        normalized.includes('no image url') ||
+        normalized.includes('empty output') ||
+        normalized.includes('no image returned')
+    ) {
+        return {
+            error: 'The model finished, but it did not return a usable image.',
+            failureCode: 'empty_output',
+            failureHint: 'Retry the task or switch to another model if it happens again.',
+            failureDetail: detail || 'The provider returned success without an image URL.',
+        };
+    }
+
+    if (
+        normalized.includes('invalid') ||
+        normalized.includes('required') ||
+        normalized.includes('parameter') ||
+        normalized.includes('schema') ||
+        normalized.includes('prompt') ||
+        normalized.includes('reference image') ||
+        normalized.includes('input')
+    ) {
+        return {
+            error: 'Some generation settings were rejected by the model.',
+            failureCode: 'invalid_input',
+            failureHint: 'Check your prompt, reference images, and model parameters, then try again.',
+            failureDetail: detail || 'The provider reported invalid input settings.',
+        };
+    }
+
+    if (
+        normalized.includes('network') ||
+        normalized.includes('connection') ||
+        normalized.includes('gateway') ||
+        normalized.includes('proxy') ||
+        normalized.includes('502') ||
+        normalized.includes('503') ||
+        normalized.includes('504')
+    ) {
+        return {
+            error: 'The connection to the image service failed during generation.',
+            failureCode: 'network',
+            failureHint: 'Retry in a moment. If it keeps happening, lower the quality or switch models.',
+            failureDetail: detail || 'The provider reported a network or gateway failure.',
+        };
+    }
+
+    return {
+        error: 'The image service failed before it could return a result.',
+        failureCode: detail ? 'provider_error' : 'unknown',
+        failureHint: 'Retry the task. If the same model keeps failing, switch to another one.',
+        failureDetail: detail || 'No additional provider detail was returned.',
+    };
 };
 
 export async function handleStatusRequest(method: string | undefined, body: any, env: EnvLike = process.env): Promise<HandlerResult> {
@@ -69,12 +230,13 @@ export async function handleStatusRequest(method: string | undefined, body: any,
     }
 
     try {
-        const detailRes = await fetch(
+        const detailRes = await fetchWithTimeout(
             `https://api.bizyair.cn/w/v1/webapp/task/openapi/detail?requestId=${encodeURIComponent(requestId)}`,
             {
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${BIZYAIR_API_KEY}` },
-            }
+            },
+            BIZYAIR_DETAIL_TIMEOUT_MS
         );
 
         if (!detailRes.ok) {
@@ -92,12 +254,13 @@ export async function handleStatusRequest(method: string | undefined, body: any,
         const queueCount = queueInfo.queue_count ?? queueInfo.queueCount ?? -1;
 
         if (bizyStatus === 'Success') {
-            const outputsRes = await fetch(
+            const outputsRes = await fetchWithTimeout(
                 `https://api.bizyair.cn/w/v1/webapp/task/openapi/outputs?requestId=${encodeURIComponent(requestId)}`,
                 {
                     method: 'GET',
                     headers: { 'Authorization': `Bearer ${BIZYAIR_API_KEY}` }
-                }
+                },
+                BIZYAIR_OUTPUTS_TIMEOUT_MS
             );
 
             if (!outputsRes.ok) {
@@ -113,15 +276,18 @@ export async function handleStatusRequest(method: string | undefined, body: any,
             const resultUrl = images[0];
 
             if (!resultUrl) {
+                const failure = classifyFailure('No parsable image URLs were returned from a successful provider response.', bizyStatus);
                 return {
                     status: 200,
                     headers: CORS_HEADERS,
                     body: {
                         requestId,
                         status: 'FAILED',
-                        error: 'BizyAir indicated success, but no parsable image URLs were returned',
+                        stage: 'failed',
+                        progress: 95,
                         bizyStatus,
                         queueCount,
+                        ...failure,
                     }
                 };
             }
@@ -160,6 +326,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                     resultUrl,
                     images,
                     progress: 100,
+                    stage: 'completed',
                     bizyStatus: 'Success',
                     queueCount,
                 }
@@ -167,7 +334,10 @@ export async function handleStatusRequest(method: string | undefined, body: any,
         }
 
         if (bizyStatus === 'Failed' || bizyStatus === 'Canceled') {
-            const errorMsg = data.error_message || detail?.error_message || `BizyAir error: ${bizyStatus}`;
+            const failure = classifyFailure(
+                data.error_message || detail?.error_message || `BizyAir error: ${bizyStatus}`,
+                bizyStatus
+            );
 
             if (SUPABASE_URL && SUPABASE_KEY && taskId && taskDetails) {
                 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -196,27 +366,29 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                 body: {
                     requestId,
                     status: bizyStatus === 'Canceled' ? 'CANCELLED' : 'FAILED',
-                    error: errorMsg,
+                    stage: 'failed',
+                    progress: 100,
                     bizyStatus,
                     queueCount,
+                    ...failure,
                 }
             };
         }
 
-        const progress = bizyStatus === 'Queuing' ? 10 : bizyStatus === 'Preparing' ? 35 : 80;
+        const stageInfo = mapProgressStage(bizyStatus);
 
         return {
             status: 200,
             headers: CORS_HEADERS,
             body: {
                 requestId,
-                status: bizyStatus === 'Queuing' ? 'QUEUED' : 'PROCESSING',
-                progress,
+                status: stageInfo.status,
+                progress: stageInfo.progress,
+                stage: stageInfo.stage,
                 bizyStatus,
                 queueCount,
             }
         };
-
     } catch (error: any) {
         console.error('API Status Check Error:', error);
         return {

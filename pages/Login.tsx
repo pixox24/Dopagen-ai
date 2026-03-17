@@ -67,7 +67,17 @@ const Login: React.FC = () => {
         const { error } = await login(email, password);
 
         if (error) {
-          setErrorMsg('Invalid email or password. Or please verify your email first.');
+          const normalized = error.toLowerCase();
+          if (
+            normalized.includes('timed out') ||
+            normalized.includes('network') ||
+            normalized.includes('failed to fetch') ||
+            normalized.includes('vpn')
+          ) {
+            setErrorMsg(error);
+          } else {
+            setErrorMsg('Invalid email or password. Or please verify your email first.');
+          }
         } else {
           navigate('/');
         }

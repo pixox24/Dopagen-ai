@@ -58,6 +58,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   const pollingAttempts = useRef<Record<string, number>>({});
+  const pollingErrorCounts = useRef<Record<string, number>>({});
   const pollingInFlightRef = useRef<Set<string>>(new Set());
   const completedTaskIdsRef = useRef<Set<string>>(new Set());
   const runningTaskIdsRef = useRef<Set<string>>(new Set());
@@ -280,6 +281,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             },
             currentTask.id
           );
+          pollingErrorCounts.current[taskId] = 0;
 
           if (statusData.status === 'COMPLETED' && statusData.resultUrl) {
             completedTaskIdsRef.current.add(taskId);
@@ -300,6 +302,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return prev.map((item) => item.id === taskId ? {
                 ...item,
                 status: 'completed',
+                stage: 'completed',
+                progress: 100,
+                bizyStatus: statusData.bizyStatus || 'Success',
+                queueCount: statusData.queueCount,
+                error: undefined,
+                failureCode: undefined,
+                failureHint: undefined,
+                failureDetail: undefined,
                 imageUrl,
                 images,
                 completedAt,
@@ -307,6 +317,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               } : item);
             });
             delete pollingAttempts.current[taskId];
+            delete pollingErrorCounts.current[taskId];
 
             const duration = currentTask.startedAt ? Math.floor((completedAt - currentTask.startedAt) / 1000) : 0;
 
@@ -327,20 +338,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setTasks((prev) => prev.map((task) => task.id === taskId ? {
               ...task,
               status: 'failed',
+              stage: 'failed',
+              progress: statusData.progress ?? 100,
+              bizyStatus: statusData.bizyStatus,
+              queueCount: statusData.queueCount,
               error: statusData.error,
+              failureCode: statusData.failureCode,
+              failureHint: statusData.failureHint,
+              failureDetail: statusData.failureDetail,
             } : task));
             delete pollingAttempts.current[taskId];
+            delete pollingErrorCounts.current[taskId];
           } else if (pollingAttempts.current[taskId] > 40) {
             runningTaskIdsRef.current.delete(taskId);
             setTasks((prev) => prev.map((task) => task.id === taskId ? {
               ...task,
               status: 'failed',
-              error: 'Generation timeout',
+              stage: 'failed',
+              progress: task.progress ?? 92,
+              error: 'The image service took too long to finish this request.',
+              failureCode: 'timeout',
+              failureHint: 'Try again with 1K quality or a simpler prompt.',
+              failureDetail: 'No final provider response was received after about 160 seconds.',
             } : task));
             delete pollingAttempts.current[taskId];
+            delete pollingErrorCounts.current[taskId];
+          } else {
+            setTasks((prev) => prev.map((task) => task.id === taskId ? {
+              ...task,
+              status: statusData.status === 'QUEUED' || statusData.status === 'PENDING' ? 'queued' : 'processing',
+              stage: statusData.stage || task.stage,
+              progress: statusData.progress ?? task.progress,
+              bizyStatus: statusData.bizyStatus ?? task.bizyStatus,
+              queueCount: statusData.queueCount ?? task.queueCount,
+              error: undefined,
+              failureCode: undefined,
+              failureHint: undefined,
+              failureDetail: undefined,
+            } : task));
           }
         } catch (error) {
           console.error(`Polling error for ${taskId}`, error);
+          pollingErrorCounts.current[taskId] = (pollingErrorCounts.current[taskId] || 0) + 1;
+
+          const errorCount = pollingErrorCounts.current[taskId];
+          const message = error instanceof Error ? error.message : 'Unknown polling error';
+
+          if (errorCount >= 3) {
+            runningTaskIdsRef.current.delete(taskId);
+            delete pollingAttempts.current[taskId];
+            delete pollingErrorCounts.current[taskId];
+
+            setTasks((prev) => prev.map((task) => task.id === taskId ? {
+              ...task,
+              status: 'failed',
+              stage: 'failed',
+              progress: task.progress ?? 85,
+              bizyStatus: 'Polling Failed',
+              error: 'We lost contact with the generation status service before the task completed.',
+              failureCode: 'network',
+              failureHint: 'Retry the task. If you are using a VPN, try switching nodes or disabling it for this site.',
+              failureDetail: message,
+            } : task));
+          } else {
+            setTasks((prev) => prev.map((task) => task.id === taskId ? {
+              ...task,
+              bizyStatus: `Retrying status check (${errorCount}/3)`,
+            } : task));
+          }
         } finally {
           pollingInFlightRef.current.delete(taskId);
         }
@@ -354,6 +419,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTasks((prev) => prev.filter((task) => task.id !== id));
     setActiveTaskId((prev) => prev === id ? null : prev);
     delete pollingAttempts.current[id];
+    delete pollingErrorCounts.current[id];
     runningTaskIdsRef.current.delete(id);
     pollingInFlightRef.current.delete(id);
     completedTaskIdsRef.current.delete(id);

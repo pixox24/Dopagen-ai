@@ -68,6 +68,20 @@ const normalizeProviderMessage = (value: unknown) => {
     return value.replace(/\s+/g, ' ').trim();
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const buildPersistedParams = (
+    params: unknown,
+    patch: Record<string, unknown> = {}
+): Record<string, unknown> => {
+    return {
+        ...(isRecord(params) ? params : {}),
+        ...patch,
+    };
+};
+
 const mapProgressStage = (bizyStatus: string) => {
     const normalized = bizyStatus.toLowerCase();
 
@@ -210,7 +224,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
 
     const BIZYAIR_API_KEY = env.BIZYAIR_API_KEY || '';
     const SUPABASE_URL = env.VITE_SUPABASE_URL || env.SUPABASE_URL || '';
-    const SUPABASE_KEY = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SERVICE_KEY || env.SUPABASE_ANON_KEY || '';
+    const SUPABASE_KEY = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SERVICE_KEY || env.SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || '';
 
     if (!BIZYAIR_API_KEY) {
         return {
@@ -221,17 +235,120 @@ export async function handleStatusRequest(method: string | undefined, body: any,
     }
 
     const { requestId, taskId, taskDetails } = body || {};
-    if (!requestId) {
+    if (!requestId && !taskId) {
         return {
             status: 400,
             headers: CORS_HEADERS,
-            body: { error: 'Missing requestId' }
+            body: { error: 'Missing requestId or taskId' }
         };
     }
 
     try {
+        const supabase = SUPABASE_URL && SUPABASE_KEY
+            ? createClient(SUPABASE_URL, SUPABASE_KEY, {
+                auth: { autoRefreshToken: false, persistSession: false }
+            })
+            : null;
+        let effectiveRequestId = typeof requestId === 'string' ? requestId : '';
+
+        if (taskId && supabase) {
+            const { data: persistedTask } = await supabase
+                .from('generation_tasks')
+                .select('status,result_url,params')
+                .eq('id', taskId)
+                .maybeSingle();
+
+            const persistedParams = isRecord(persistedTask?.params) ? persistedTask.params : {};
+            const persistedRequestId = typeof persistedParams.providerRequestId === 'string'
+                ? persistedParams.providerRequestId
+                : typeof persistedParams.requestId === 'string'
+                    ? persistedParams.requestId
+                    : '';
+
+            if (!effectiveRequestId && persistedRequestId) {
+                effectiveRequestId = persistedRequestId;
+            }
+
+            if (persistedTask?.status === 'COMPLETED' && persistedTask.result_url) {
+                return {
+                    status: 200,
+                    headers: CORS_HEADERS,
+                    body: {
+                        requestId: effectiveRequestId || persistedRequestId || undefined,
+                        status: 'COMPLETED',
+                        resultUrl: persistedTask.result_url,
+                        images: [persistedTask.result_url],
+                        progress: 100,
+                        stage: 'completed',
+                        bizyStatus: 'Success',
+                        queueCount: 0,
+                    }
+                };
+            }
+
+            if (persistedTask?.status === 'FAILED') {
+                const failure = classifyFailure(
+                    persistedParams.providerError || 'The provider failed before returning a result.',
+                    'Failed'
+                );
+
+                return {
+                    status: 200,
+                    headers: CORS_HEADERS,
+                    body: {
+                        requestId: effectiveRequestId || persistedRequestId || undefined,
+                        status: 'FAILED',
+                        stage: 'failed',
+                        progress: 100,
+                        bizyStatus: 'Failed',
+                        queueCount: -1,
+                        ...failure,
+                    }
+                };
+            }
+
+            if (!effectiveRequestId) {
+                const persistedStatus = persistedTask?.status || 'SUBMITTING';
+                const normalizedStatus = String(persistedStatus).toUpperCase();
+                const isPreparing = normalizedStatus === 'PROCESSING';
+                const providerLabel = normalizedStatus === 'SUBMITTING'
+                    ? 'Submitting'
+                    : isPreparing
+                        ? 'Preparing'
+                        : 'Queued';
+
+                return {
+                    status: 200,
+                    headers: CORS_HEADERS,
+                    body: {
+                        requestId: undefined,
+                        status: isPreparing ? 'PROCESSING' : 'QUEUED',
+                        progress: normalizedStatus === 'SUBMITTING' ? 6 : isPreparing ? 20 : 10,
+                        stage: normalizedStatus === 'SUBMITTING' ? 'queued' : isPreparing ? 'preparing' : 'queued',
+                        bizyStatus: providerLabel,
+                        queueCount: -1,
+                    }
+                };
+            }
+        }
+
+        if (!effectiveRequestId) {
+            return {
+                status: 200,
+                headers: CORS_HEADERS,
+                body: {
+                    requestId: undefined,
+                    status: 'QUEUED',
+                    progress: 6,
+                    stage: 'queued',
+                    bizyStatus: 'Submitting',
+                    queueCount: -1,
+                }
+            };
+        }
+
         const detailRes = await fetchWithTimeout(
-            `https://api.bizyair.cn/w/v1/webapp/task/openapi/detail?requestId=${encodeURIComponent(requestId)}`,
+            `https://api.bizyair.cn/w/v1/webapp/task/openapi/detail?requestId=${encodeURIComponent(effectiveRequestId)}`,
             {
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${BIZYAIR_API_KEY}` },
@@ -255,7 +372,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
 
         if (bizyStatus === 'Success') {
             const outputsRes = await fetchWithTimeout(
-                `https://api.bizyair.cn/w/v1/webapp/task/openapi/outputs?requestId=${encodeURIComponent(requestId)}`,
+                `https://api.bizyair.cn/w/v1/webapp/task/openapi/outputs?requestId=${encodeURIComponent(effectiveRequestId)}`,
                 {
                     method: 'GET',
                     headers: { 'Authorization': `Bearer ${BIZYAIR_API_KEY}` }
@@ -292,11 +409,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                 };
             }
 
-            if (SUPABASE_URL && SUPABASE_KEY && taskId && taskDetails) {
-                const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-                    auth: { autoRefreshToken: false, persistSession: false }
-                });
-
+            if (supabase && taskId && taskDetails) {
                 void (async () => {
                     try {
                         await supabase
@@ -306,7 +419,11 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                                 user_id: taskDetails.userId || null,
                                 model_id: taskDetails.modelId,
                                 prompt: taskDetails.prompt,
-                                params: taskDetails.params,
+                                params: buildPersistedParams(taskDetails.params, {
+                                    providerRequestId: effectiveRequestId,
+                                    submissionState: 'accepted',
+                                    submissionUpdatedAt: new Date().toISOString(),
+                                }),
                                 status: 'COMPLETED',
                                 result_url: resultUrl,
                                 created_at: new Date().toISOString(),
@@ -318,10 +435,10 @@ export async function handleStatusRequest(method: string | undefined, body: any,
             }
 
             return {
-                status: 200,
-                headers: CORS_HEADERS,
-                body: {
-                    requestId,
+                    status: 200,
+                    headers: CORS_HEADERS,
+                    body: {
+                    requestId: effectiveRequestId,
                     status: 'COMPLETED',
                     resultUrl,
                     images,
@@ -339,11 +456,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                 bizyStatus
             );
 
-            if (SUPABASE_URL && SUPABASE_KEY && taskId && taskDetails) {
-                const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-                    auth: { autoRefreshToken: false, persistSession: false }
-                });
-
+            if (supabase && taskId && taskDetails) {
                 void (async () => {
                     try {
                         await supabase.from('generation_tasks').upsert({
@@ -351,7 +464,12 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                             user_id: taskDetails.userId || null,
                             model_id: taskDetails.modelId,
                             prompt: taskDetails.prompt,
-                            params: taskDetails.params,
+                            params: buildPersistedParams(taskDetails.params, {
+                                providerRequestId: effectiveRequestId,
+                                providerError: failure.failureDetail || failure.error,
+                                submissionState: 'accepted',
+                                submissionUpdatedAt: new Date().toISOString(),
+                            }),
                             status: 'FAILED',
                         }, { onConflict: 'id' });
                     } catch {
@@ -364,7 +482,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
                 status: 200,
                 headers: CORS_HEADERS,
                 body: {
-                    requestId,
+                    requestId: effectiveRequestId,
                     status: bizyStatus === 'Canceled' ? 'CANCELLED' : 'FAILED',
                     stage: 'failed',
                     progress: 100,
@@ -381,7 +499,7 @@ export async function handleStatusRequest(method: string | undefined, body: any,
             status: 200,
             headers: CORS_HEADERS,
             body: {
-                requestId,
+                requestId: effectiveRequestId,
                 status: stageInfo.status,
                 progress: stageInfo.progress,
                 stage: stageInfo.stage,

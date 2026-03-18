@@ -225,7 +225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     const currentRunning = tasks
-      .filter((task) => (task.status === 'processing' || task.status === 'queued') && !task.id.startsWith('pending_'))
+      .filter((task) => task.status === 'processing' || task.status === 'queued')
       .map((task) => task.id);
 
     const currentSet = new Set(currentRunning);
@@ -259,10 +259,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (currentTask.status !== 'processing' && currentTask.status !== 'queued') {
           runningTaskIdsRef.current.delete(taskId);
           delete pollingAttempts.current[taskId];
-          continue;
-        }
-
-        if (!currentTask.requestId) {
           continue;
         }
 
@@ -304,6 +300,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 status: 'completed',
                 stage: 'completed',
                 progress: 100,
+                requestId: statusData.requestId || item.requestId,
                 bizyStatus: statusData.bizyStatus || 'Success',
                 queueCount: statusData.queueCount,
                 error: undefined,
@@ -339,6 +336,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ...task,
               status: 'failed',
               stage: 'failed',
+              requestId: statusData.requestId || task.requestId,
               progress: statusData.progress ?? 100,
               bizyStatus: statusData.bizyStatus,
               queueCount: statusData.queueCount,
@@ -368,6 +366,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ...task,
               status: statusData.status === 'QUEUED' || statusData.status === 'PENDING' ? 'queued' : 'processing',
               stage: statusData.stage || task.stage,
+              requestId: statusData.requestId || task.requestId,
               progress: statusData.progress ?? task.progress,
               bizyStatus: statusData.bizyStatus ?? task.bizyStatus,
               queueCount: statusData.queueCount ?? task.queueCount,

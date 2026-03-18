@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -13,7 +14,7 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-const BIZYAIR_CREATE_TIMEOUT_MS = 25000;
+const BIZYAIR_CREATE_TIMEOUT_MS = 90000;
 
 const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
     const controller = new AbortController();
@@ -31,6 +32,53 @@ const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, tim
         throw error;
     } finally {
         clearTimeout(timeoutId);
+    }
+};
+
+const createAdminClient = (env: EnvLike): SupabaseClient | null => {
+    const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL || '';
+    const supabaseServiceKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SERVICE_KEY || env.SERVICE_ROLE_KEY || '';
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+        return null;
+    }
+
+    return createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false,
+        }
+    });
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const buildPersistedParams = (
+    params: unknown,
+    patch: Record<string, unknown> = {}
+): Record<string, unknown> => {
+    return {
+        ...(isRecord(params) ? params : {}),
+        ...patch,
+    };
+};
+
+const upsertGenerationTask = async (
+    adminClient: SupabaseClient | null,
+    payload: Record<string, unknown>
+) => {
+    if (!adminClient) {
+        return;
+    }
+
+    try {
+        await adminClient
+            .from('generation_tasks')
+            .upsert(payload, { onConflict: 'id' });
+    } catch (error) {
+        console.warn('[Generate API] Failed to persist generation task.', error);
     }
 };
 
@@ -74,6 +122,20 @@ export async function handleGenerateRequest(method: string | undefined, body: an
             web_app_id: params.web_app_id,
             input_values: params.input_values,
         };
+        const adminClient = createAdminClient(env);
+        const submittedAt = new Date().toISOString();
+
+        await upsertGenerationTask(adminClient, {
+            id: taskId,
+            model_id: modelId,
+            prompt,
+            params: buildPersistedParams(params, {
+                submissionState: 'submitting',
+                submissionUpdatedAt: submittedAt,
+            }),
+            status: 'SUBMITTING',
+            created_at: submittedAt,
+        });
 
         const response = await fetchWithTimeout('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
             method: 'POST',
@@ -87,6 +149,17 @@ export async function handleGenerateRequest(method: string | undefined, body: an
 
         if (!response.ok) {
             const errText = await response.text();
+            await upsertGenerationTask(adminClient, {
+                id: taskId,
+                model_id: modelId,
+                prompt,
+                params: buildPersistedParams(params, {
+                    submissionState: 'failed',
+                    providerError: errText.substring(0, 300),
+                    submissionUpdatedAt: new Date().toISOString(),
+                }),
+                status: 'FAILED',
+            });
             return {
                 status: 502,
                 headers: CORS_HEADERS,
@@ -98,12 +171,35 @@ export async function handleGenerateRequest(method: string | undefined, body: an
         const requestId = result?.data?.request_id || result?.data?.requestId || result?.data?.task_id || result?.request_id || result?.requestId || result?.task_id;
 
         if (!requestId) {
+            await upsertGenerationTask(adminClient, {
+                id: taskId,
+                model_id: modelId,
+                prompt,
+                params: buildPersistedParams(params, {
+                    submissionState: 'failed',
+                    providerError: 'BizyAir missing requestId in payload',
+                    submissionUpdatedAt: new Date().toISOString(),
+                }),
+                status: 'FAILED',
+            });
             return {
                 status: 502,
                 headers: CORS_HEADERS,
                 body: { error: 'BizyAir missing requestId in payload' }
             };
         }
+
+        await upsertGenerationTask(adminClient, {
+            id: taskId,
+            model_id: modelId,
+            prompt,
+            params: buildPersistedParams(params, {
+                providerRequestId: requestId,
+                submissionState: 'accepted',
+                submissionUpdatedAt: new Date().toISOString(),
+            }),
+            status: 'QUEUED',
+        });
 
         return {
             status: 200,
@@ -118,10 +214,44 @@ export async function handleGenerateRequest(method: string | undefined, body: an
 
     } catch (error: any) {
         console.error('API Generate Error:', error);
+
+        const { taskId, modelId, prompt, params } = body || {};
+        const adminClient = createAdminClient(env);
+        const message = error?.message || 'Unknown error';
+
+        if (taskId && params) {
+            await upsertGenerationTask(adminClient, {
+                id: taskId,
+                model_id: modelId,
+                prompt,
+                params: buildPersistedParams(params, {
+                    submissionState: message.includes('timed out') ? 'waiting_for_provider_ack' : 'error',
+                    providerError: String(message).substring(0, 300),
+                    submissionUpdatedAt: new Date().toISOString(),
+                }),
+                status: message.includes('timed out') ? 'SUBMITTING' : 'FAILED',
+            });
+        }
+
+        if (taskId && message.includes('BizyAir create request timed out')) {
+            return {
+                status: 202,
+                headers: CORS_HEADERS,
+                body: {
+                    success: true,
+                    taskId,
+                    status: 'PENDING',
+                    recoverable: true,
+                    submittedParams: params,
+                    message: 'BizyAir accepted the request slowly. Keep polling this task by taskId while the provider returns its requestId.'
+                }
+            };
+        }
+
         return {
             status: 500,
             headers: CORS_HEADERS,
-            body: { error: `Internal server proxy error: ${error?.message || 'Unknown error'}` }
+            body: { error: `Internal server proxy error: ${message}` }
         };
     }
 }

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { clearSupabaseAuthStorage, supabase } from '../lib/supabase';
+import { clearSupabaseAuthStorage, supabase, supabaseAuthStorageKey } from '../lib/supabase';
 
 export interface User {
   id: string;
@@ -26,6 +26,12 @@ const SESSION_RECOVERY_TIMEOUT_MS = 6000;
 const PROFILE_TIMEOUT_MS = 8000;
 const AUTH_ACTION_TIMEOUT_MS = 15000;
 
+type SessionIdentity = {
+  userId: string;
+  email: string;
+  username?: string | null;
+};
+
 const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -44,11 +50,111 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMe
   }
 };
 
+const isPersistedSession = (value: unknown): value is Session => {
+  return typeof value === 'object'
+    && value !== null
+    && 'access_token' in value
+    && 'refresh_token' in value
+    && 'expires_at' in value;
+};
+
+const readStoredJson = <T,>(key: string): T | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(key);
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawValue) as T;
+  } catch (error) {
+    console.warn(`[Auth] Failed to parse persisted auth payload for "${key}".`, error);
+    return null;
+  }
+};
+
+const decodeBase64Url = (value: string): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return window.atob(padded);
+  } catch (error) {
+    console.warn('[Auth] Failed to decode persisted session token.', error);
+    return null;
+  }
+};
+
+const getUsername = (value: unknown): string | null => {
+  if (typeof value !== 'object' || value === null || !('username' in value)) {
+    return null;
+  }
+
+  return typeof value.username === 'string' ? value.username : null;
+};
+
+const getSessionIdentity = (activeSession: Session | null): SessionIdentity | null => {
+  if (!activeSession) {
+    return null;
+  }
+
+  if (activeSession.user?.id) {
+    return {
+      userId: activeSession.user.id,
+      email: activeSession.user.email || '',
+      username: getUsername(activeSession.user.user_metadata),
+    };
+  }
+
+  const payloadSegment = activeSession.access_token?.split('.')[1];
+  const decodedPayload = payloadSegment ? decodeBase64Url(payloadSegment) : null;
+  if (!decodedPayload) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(decodedPayload) as Record<string, unknown>;
+    if (typeof payload.sub !== 'string') {
+      return null;
+    }
+
+    return {
+      userId: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : '',
+      username: getUsername(payload.user_metadata),
+    };
+  } catch (error) {
+    console.warn('[Auth] Failed to parse persisted session identity.', error);
+    return null;
+  }
+};
+
+const readPersistedSession = (): Session | null => {
+  const storedSession = readStoredJson<Session>(supabaseAuthStorageKey);
+  if (!isPersistedSession(storedSession)) {
+    return null;
+  }
+
+  const storedUser = readStoredJson<{ user?: Session['user'] | null }>(`${supabaseAuthStorageKey}-user`);
+  if (!storedSession.user && storedUser?.user) {
+    return { ...storedSession, user: storedUser.user } as Session;
+  }
+
+  return storedSession;
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const isMountedRef = useRef(true);
+  const activeSessionUserIdRef = useRef<string | null>(null);
 
   const buildFallbackUser = useCallback((userId: string, email: string, username?: string | null): User => ({
     id: userId,
@@ -86,8 +192,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [buildFallbackUser]);
 
+  const applySession = useCallback((nextSession: Session | null) => {
+    activeSessionUserIdRef.current = getSessionIdentity(nextSession)?.userId ?? null;
+    setSession(nextSession);
+  }, []);
+
   const hydrateUserFromSession = useCallback(async (activeSession: Session | null) => {
-    if (!activeSession?.user) {
+    const sessionIdentity = getSessionIdentity(activeSession);
+
+    if (!sessionIdentity) {
       if (isMountedRef.current) {
         setUser(null);
       }
@@ -95,39 +208,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const fallbackUser = buildFallbackUser(
-      activeSession.user.id,
-      activeSession.user.email || '',
-      typeof activeSession.user.user_metadata?.username === 'string'
-        ? activeSession.user.user_metadata.username
-        : null
+      sessionIdentity.userId,
+      sessionIdentity.email,
+      sessionIdentity.username
     );
 
-    if (isMountedRef.current) {
+    if (isMountedRef.current && activeSessionUserIdRef.current === sessionIdentity.userId) {
       setUser((current) => current?.id === fallbackUser.id
         ? { ...fallbackUser, avatar: current.avatar, role: current.role }
         : fallbackUser);
     }
 
-    const profile = await fetchProfile(activeSession.user.id, activeSession.user.email || '');
-    if (isMountedRef.current) {
+    const profile = await fetchProfile(sessionIdentity.userId, sessionIdentity.email);
+    if (isMountedRef.current && activeSessionUserIdRef.current === sessionIdentity.userId) {
       setUser(profile);
     }
   }, [buildFallbackUser, fetchProfile]);
 
   useEffect(() => {
     isMountedRef.current = true;
-    let didSessionRecoveryTimeout = false;
+    const persistedSession = readPersistedSession();
 
-    const timeoutId = setTimeout(() => {
-      if (isMountedRef.current) {
-        didSessionRecoveryTimeout = true;
-        console.warn('[Auth] Session recovery exceeded timeout. Falling back to logged-out state.');
-        clearSupabaseAuthStorage();
-        setSession(null);
-        setUser(null);
-        setIsLoading(false);
-      }
-    }, SESSION_RECOVERY_TIMEOUT_MS);
+    if (persistedSession) {
+      applySession(persistedSession);
+      void hydrateUserFromSession(persistedSession);
+    }
 
     const init = async () => {
       try {
@@ -137,26 +242,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'Session recovery timed out'
         );
 
-        if (!isMountedRef.current || didSessionRecoveryTimeout) {
+        if (!isMountedRef.current) {
           return;
         }
 
-        setSession(existingSession);
+        if (!existingSession) {
+          clearSupabaseAuthStorage();
+          applySession(null);
+          setUser(null);
+          return;
+        }
+
+        applySession(existingSession);
         await hydrateUserFromSession(existingSession);
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           return;
         }
 
+        if (error instanceof Error && error.message === 'Session recovery timed out') {
+          console.warn('[Auth] Session recovery exceeded timeout. Keeping persisted session until Supabase responds.');
+          return;
+        }
+
         console.error('[Auth] Init error:', error);
-        clearSupabaseAuthStorage();
-        if (isMountedRef.current) {
-          setSession(null);
+        if (!persistedSession && isMountedRef.current) {
+          applySession(null);
           setUser(null);
         }
       } finally {
         if (isMountedRef.current) {
-          clearTimeout(timeoutId);
           setIsLoading(false);
         }
       }
@@ -164,21 +279,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     void init();
 
-    const authState = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    const authState = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!isMountedRef.current) {
         return;
       }
 
-      setSession(newSession);
+      if (event === 'SIGNED_OUT') {
+        clearSupabaseAuthStorage();
+      }
+
+      applySession(newSession);
       await hydrateUserFromSession(newSession);
     });
 
     return () => {
       isMountedRef.current = false;
-      clearTimeout(timeoutId);
       authState.data.subscription.unsubscribe();
     };
-  }, [hydrateUserFromSession]);
+  }, [applySession, hydrateUserFromSession]);
 
   const login = async (email: string, password: string): Promise<{ error?: string }> => {
     try {
@@ -193,7 +311,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.session) {
-        setSession(data.session);
+        applySession(data.session);
         void hydrateUserFromSession(data.session);
       }
 
@@ -223,7 +341,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.session) {
-        setSession(data.session);
+        applySession(data.session);
         void hydrateUserFromSession(data.session);
       }
 
@@ -246,7 +364,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       clearSupabaseAuthStorage();
       setUser(null);
-      setSession(null);
+      applySession(null);
     }
   };
 

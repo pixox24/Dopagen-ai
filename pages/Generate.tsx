@@ -591,6 +591,7 @@ const Generate: React.FC = () => {
             const { submitGenerationTask } = await import('../services/api');
             const submitResponse = await submitGenerationTask({
                 model,
+                taskId: pendingTaskId,
                 formState: finalFormState,
                 globalWidth: dimensions.w,
                 globalHeight: dimensions.h,
@@ -599,9 +600,9 @@ const Generate: React.FC = () => {
             });
 
             const { taskId: backendTaskId, imageUrl, status, requestId, submittedParams } = submitResponse;
-            const nextStatus = status === 'COMPLETED' ? 'completed' : (status === 'PROCESSING' || status === 'PENDING' ? 'processing' : 'queued');
-            const nextStage = status === 'COMPLETED' ? 'completed' : nextStatus === 'processing' ? 'preparing' : 'queued';
-            const nextProgress = status === 'COMPLETED' ? 100 : nextStatus === 'processing' ? 24 : 8;
+            const nextStatus = status === 'COMPLETED' ? 'completed' : status === 'PROCESSING' ? 'processing' : 'queued';
+            const nextStage = status === 'COMPLETED' ? 'completed' : status === 'PROCESSING' ? 'preparing' : 'queued';
+            const nextProgress = status === 'COMPLETED' ? 100 : status === 'PROCESSING' ? 24 : status === 'PENDING' ? 6 : 8;
             const completedAt = status === 'COMPLETED' && imageUrl ? Date.now() : undefined;
             const duration = completedAt ? Math.floor((completedAt - pendingTask.startedAt!) / 1000) : undefined;
 
@@ -619,7 +620,13 @@ const Generate: React.FC = () => {
                         status: nextStatus,
                         stage: nextStage,
                         progress: nextProgress,
-                        bizyStatus: status === 'COMPLETED' ? 'Success' : nextStatus === 'processing' ? 'Preparing' : 'Queued',
+                        bizyStatus: status === 'COMPLETED'
+                            ? 'Success'
+                            : status === 'PENDING'
+                                ? 'Submitting'
+                                : nextStatus === 'processing'
+                                    ? 'Preparing'
+                                    : 'Queued',
                         queueCount: undefined,
                         imageUrl: imageUrl || t.imageUrl,
                         images: imageUrl ? [imageUrl] : t.images,

@@ -1,6 +1,6 @@
 import { GenerateOptions, GenerationFailureCode, GenerationStage } from '../types';
 
-const GENERATE_REQUEST_TIMEOUT_MS = 45000;
+const GENERATE_REQUEST_TIMEOUT_MS = 100000;
 const STATUS_REQUEST_TIMEOUT_MS = 15000;
 
 const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
@@ -43,6 +43,8 @@ export interface SubmitTaskResponse {
     requestId?: string;
     imageUrl?: string;
     status?: string;
+    recoverable?: boolean;
+    message?: string;
     submittedParams?: {
         web_app_id: string | number;
         input_values: Record<string, string | number | boolean>;
@@ -131,10 +133,32 @@ export const submitGenerationTask = async (
 
     if (!response.ok) {
         const errText = await response.text().catch(() => 'Network request failed');
+
+        if (errText.includes('BizyAir create request timed out')) {
+            return {
+                taskId,
+                status: 'PENDING',
+                recoverable: true,
+                message: 'The provider accepted the task slowly. We will keep checking by taskId until the provider requestId is available.',
+                submittedParams: params,
+            };
+        }
+
         throw new Error(`${response.status} ${errText}`);
     }
 
     const data = await response.json();
+
+    if (!data?.requestId && data?.status === 'PENDING') {
+        return {
+            taskId,
+            status: 'PENDING',
+            recoverable: Boolean(data.recoverable),
+            message: typeof data.message === 'string' ? data.message : undefined,
+            submittedParams: params,
+        };
+    }
+
     if (!data?.requestId) {
         throw new Error('Server did not return a BizyAir requestId');
     }
@@ -149,7 +173,7 @@ export const submitGenerationTask = async (
 };
 
 export const pollTaskStatus = async (
-    requestId: string,
+    requestId: string | undefined,
     taskDetails?: PollTaskDetails,
     taskId?: string
 ): Promise<TaskResponse> => {
@@ -160,7 +184,7 @@ export const pollTaskStatus = async (
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            requestId,
+            requestId: requestId || null,
             taskId,
             taskDetails: taskDetails || null
         })

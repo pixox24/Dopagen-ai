@@ -40,6 +40,7 @@ const CORS_HEADERS = {
 
 const BIZYAIR_DETAIL_TIMEOUT_MS = 15000;
 const BIZYAIR_OUTPUTS_TIMEOUT_MS = 20000;
+const REQUEST_ID_RECOVERY_TIMEOUT_MS = 180000;
 
 const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
     const controller = new AbortController();
@@ -80,6 +81,15 @@ const buildPersistedParams = (
         ...(isRecord(params) ? params : {}),
         ...patch,
     };
+};
+
+const parseTimestamp = (value: unknown): number | null => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
 };
 
 const mapProgressStage = (bizyStatus: string) => {
@@ -310,6 +320,57 @@ export async function handleStatusRequest(method: string | undefined, body: any,
             if (!effectiveRequestId) {
                 const persistedStatus = persistedTask?.status || 'SUBMITTING';
                 const normalizedStatus = String(persistedStatus).toUpperCase();
+                const submissionUpdatedAt = parseTimestamp(persistedParams.submissionUpdatedAt);
+                const waitingForProviderAck =
+                    persistedParams.submissionState === 'waiting_for_provider_ack'
+                    || normalizedStatus === 'SUBMITTING';
+                const hasExceededRecoveryWindow =
+                    submissionUpdatedAt !== null
+                    && Date.now() - submissionUpdatedAt > REQUEST_ID_RECOVERY_TIMEOUT_MS;
+
+                if (waitingForProviderAck && hasExceededRecoveryWindow) {
+                    const failure = classifyFailure(
+                        persistedParams.providerError || 'The provider likely accepted the task, but the request ID never made it back to this app.',
+                        'Provider handoff lost'
+                    );
+
+                    if (supabase && taskId && taskDetails) {
+                        void supabase
+                            .from('generation_tasks')
+                            .upsert({
+                                id: taskId,
+                                user_id: taskDetails.userId || null,
+                                model_id: taskDetails.modelId,
+                                prompt: taskDetails.prompt,
+                                params: buildPersistedParams(taskDetails.params, {
+                                    ...persistedParams,
+                                    submissionState: 'request_id_lost',
+                                    providerError: failure.failureDetail || failure.error,
+                                    submissionUpdatedAt: new Date().toISOString(),
+                                }),
+                                status: 'FAILED',
+                            }, { onConflict: 'id' })
+                            .catch(() => undefined);
+                    }
+
+                    return {
+                        status: 200,
+                        headers: CORS_HEADERS,
+                        body: {
+                            requestId: undefined,
+                            status: 'FAILED',
+                            stage: 'failed',
+                            progress: 100,
+                            bizyStatus: 'Provider handoff lost',
+                            queueCount: -1,
+                            error: 'The image provider likely accepted this job, but the app never received the tracking ID needed to fetch the result.',
+                            failureCode: 'network',
+                            failureHint: 'Retry the task. If you are on a VPN or unstable network, switch nodes or disable it for this site before retrying.',
+                            failureDetail: failure.failureDetail || 'The request stayed in submitting state for more than 3 minutes without a recoverable request ID.',
+                        }
+                    };
+                }
+
                 const isPreparing = normalizedStatus === 'PROCESSING';
                 const providerLabel = normalizedStatus === 'SUBMITTING'
                     ? 'Submitting'

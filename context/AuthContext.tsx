@@ -22,9 +22,10 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SESSION_RECOVERY_TIMEOUT_MS = 6000;
-const PROFILE_TIMEOUT_MS = 8000;
+const SESSION_RECOVERY_TIMEOUT_MS = 12000;
+const PROFILE_TIMEOUT_MS = 3000;
 const AUTH_ACTION_TIMEOUT_MS = 15000;
+const PROFILE_RETRY_COOLDOWN_MS = 30000;
 
 type SessionIdentity = {
   userId: string;
@@ -155,6 +156,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
   const isMountedRef = useRef(true);
   const activeSessionUserIdRef = useRef<string | null>(null);
+  const profileCacheRef = useRef<Map<string, User>>(new Map());
+  const profileRequestRef = useRef<Map<string, Promise<User>>>(new Map());
+  const profileFailureRef = useRef<Map<string, number>>(new Map());
+  const profileWarningRef = useRef<Map<string, number>>(new Map());
 
   const buildFallbackUser = useCallback((userId: string, email: string, username?: string | null): User => ({
     id: userId,
@@ -164,32 +169,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }), []);
 
   const fetchProfile = useCallback(async (userId: string, email: string): Promise<User> => {
-    try {
-      const { data, error } = await withTimeout(
-        supabase
-          .from('profiles')
-          .select('id,username,email,avatar_url,role')
-          .eq('id', userId)
-          .single(),
-        PROFILE_TIMEOUT_MS,
-        'Profile lookup timed out'
-      );
+    const cachedProfile = profileCacheRef.current.get(userId);
+    if (cachedProfile) {
+      return cachedProfile;
+    }
 
-      if (error || !data) {
-        return buildFallbackUser(userId, email);
-      }
-
-      return {
-        id: data.id,
-        username: data.username || email.split('@')[0],
-        email: data.email || email,
-        avatar: data.avatar_url || '',
-        role: data.role
-      };
-    } catch (error) {
-      console.warn('[Auth] Falling back to session user because profile lookup failed.', error);
+    const lastFailureAt = profileFailureRef.current.get(userId) || 0;
+    if (Date.now() - lastFailureAt < PROFILE_RETRY_COOLDOWN_MS) {
       return buildFallbackUser(userId, email);
     }
+
+    const existingRequest = profileRequestRef.current.get(userId);
+    if (existingRequest) {
+      return existingRequest;
+    }
+
+    const request = (async () => {
+      try {
+        const { data, error } = await withTimeout(
+          supabase
+            .from('profiles')
+            .select('id,username,email,avatar_url,role')
+            .eq('id', userId)
+            .maybeSingle(),
+          PROFILE_TIMEOUT_MS,
+          'Profile lookup timed out'
+        );
+
+        if (error || !data) {
+          if (error) {
+            profileFailureRef.current.set(userId, Date.now());
+          }
+          return buildFallbackUser(userId, email);
+        }
+
+        const profile = {
+          id: data.id,
+          username: data.username || email.split('@')[0],
+          email: data.email || email,
+          avatar: data.avatar_url || '',
+          role: data.role
+        };
+        profileCacheRef.current.set(userId, profile);
+        profileFailureRef.current.delete(userId);
+        return profile;
+      } catch (error) {
+        profileFailureRef.current.set(userId, Date.now());
+
+        const lastWarningAt = profileWarningRef.current.get(userId) || 0;
+        if (Date.now() - lastWarningAt >= PROFILE_RETRY_COOLDOWN_MS) {
+          console.warn('[Auth] Falling back to session user because profile lookup failed.', error);
+          profileWarningRef.current.set(userId, Date.now());
+        }
+
+        return buildFallbackUser(userId, email);
+      } finally {
+        profileRequestRef.current.delete(userId);
+      }
+    })();
+
+    profileRequestRef.current.set(userId, request);
+    return request;
   }, [buildFallbackUser]);
 
   const applySession = useCallback((nextSession: Session | null) => {

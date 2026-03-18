@@ -45,6 +45,25 @@ const loadLocalImageStore = async () => {
 };
 
 type IdleCallbackHandle = number;
+const CUSTOM_MODELS_TIMEOUT_MS = 4000;
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, session } = useAuth();
@@ -63,6 +82,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const completedTaskIdsRef = useRef<Set<string>>(new Set());
   const runningTaskIdsRef = useRef<Set<string>>(new Set());
   const tasksRef = useRef<GenerationTask[]>([]);
+  const customModelsWarningAtRef = useRef(0);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -123,10 +143,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const { data, error } = await supabase
-        .from('custom_models')
-        .select('id,name,version,description,web_app_id,schema,input_map,thumbnail_url,is_hidden,api_key,created_at')
-        .eq('user_id', user.id);
+      const { data, error } = await withTimeout(
+        supabase
+          .from('custom_models')
+          .select('id,name,version,description,web_app_id,schema,input_map,thumbnail_url,is_hidden,api_key,created_at')
+          .eq('user_id', user.id),
+        CUSTOM_MODELS_TIMEOUT_MS,
+        'Custom models lookup timed out'
+      );
 
       if (error || !data) {
         return;
@@ -153,7 +177,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })));
       setHiddenModelIds(data.filter((model) => model.is_hidden).map((model) => model.id));
     } catch (error) {
-      console.error('Failed to fetch custom models:', error);
+      if (Date.now() - customModelsWarningAtRef.current >= 30000) {
+        console.warn('Failed to fetch custom models, continuing with bundled/global models only.', error);
+        customModelsWarningAtRef.current = Date.now();
+      }
     }
   }, [session, user]);
 
